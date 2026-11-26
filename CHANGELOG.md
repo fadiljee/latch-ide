@@ -5,6 +5,7 @@ Format mengikuti [Keep a Changelog](https://keepachangelog.com/id-ID/1.1.0/) dan
 ## [Unreleased]
 
 ### Added
+- Lisensi open-source `Apache-2.0` (`LICENSE`), sinkronisasi metadata lisensi di `Cargo.toml` dan `web/package.json`, serta pembaruan logo adaptif gelap/terang dan informasi open-source di `README.md`.
 - Bootstrap Cargo workspace **Latch (`latch-ide`)** (14 crate di `crates/` + `cli/` binary tunggal `latch` dengan alias `latchd`), konfigurasi `.cargo/config.toml`, `rustfmt.toml`, `clippy.toml`, `deny.toml`, dan workflow CI `.github/workflows/ci.yml` (`T-003`, `T-004`).
 - Implementasi penuh Fase 1 (`v0.1` Fondasi):
   - `latch-core`: model domain UUID v7, mesin status `can_transition` + proptest, parser & validator `config.toml`/`agents.toml` dengan baris/field, redaksi rahasia (`NFR-05`), trait `SandboxProvider`, dan protokol UDS JSON-RPC 2.0 + `AttachFrame` (`T-101`, `T-102`).

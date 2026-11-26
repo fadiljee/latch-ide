@@ -1,14 +1,25 @@
 <p align="center">
-  <img src="assets/icon.png" alt="Latch Logo" width="112" />
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/icon.png" />
+    <source media="(prefers-color-scheme: light)" srcset="assets/icon-light.png" />
+    <img src="assets/icon-light.png" alt="Latch Logo" width="280" />
+  </picture>
 </p>
 
-# Latch (`latch-ide`)
+<h1 align="center">Latch (<code>latch-ide</code>)</h1>
 
-> A **100% Rust** AI coding-agent runtime, orchestrator, and Agent IDE foundation in a single binary (`latch` / `latchd`). Low memory footprint, `git worktree` isolation, observable by design, and built without Electron.
+<p align="center">
+  An <strong>open-source, 100% Rust</strong> AI coding-agent runtime, orchestrator, and Agent IDE foundation in a single binary (<code>latch</code> / <code>latchd</code>).<br />
+  Low memory footprint, <code>git worktree</code> isolation, observable by design, and built without Electron.
+</p>
 
-![status](https://img.shields.io/badge/status-v0.1--alpha-blue)
-![rust](https://img.shields.io/badge/rust-1.85%2B-orange)
-![license](https://img.shields.io/badge/license-TBD-lightgrey)
+<p align="center">
+  <a href="https://github.com/fadiljee/latch-ide/actions/workflows/ci.yml"><img src="https://github.com/fadiljee/latch-ide/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <img src="https://img.shields.io/badge/status-v0.1--alpha-blue" alt="Status: v0.1-alpha" />
+  <img src="https://img.shields.io/badge/rust-1.85%2B-orange" alt="Rust 1.85+" />
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-green" alt="License: Apache-2.0" /></a>
+  <a href="CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen" alt="PRs Welcome" /></a>
+</p>
 
 ## Why Latch Exists
 
@@ -127,11 +138,14 @@ cargo nextest run --workspace
 (cd web && npm ci && npm run lint && npm run typecheck && npm run test && npm run build)
 ```
 
-## Project Guides
+## Open Source & Contributing
 
-- [`CONTRIBUTING.md`](CONTRIBUTING.md) — Local setup, coding standards, PR workflow, and test requirements.
-- [`SECURITY.md`](SECURITY.md) — Vulnerability disclosure policy and core security invariants.
-- [`CHANGELOG.md`](CHANGELOG.md) — Release history and upcoming changes.
+Latch is an open-source project built in the open — bug reports, architectural feedback, tests, documentation improvements, and pull requests are welcome.
+
+- **Issues & Discussions:** Report bugs or propose features on [GitHub Issues](https://github.com/fadiljee/latch-ide/issues).
+- **Contributing Guide:** See [`CONTRIBUTING.md`](CONTRIBUTING.md) for local setup, coding standards, PR workflow, and required checks.
+- **Security Policy:** See [`SECURITY.md`](SECURITY.md) for private vulnerability disclosure and core security invariants.
+- **Changelog:** See [`CHANGELOG.md`](CHANGELOG.md) for release history and upcoming changes.
 
 ## Security
 
@@ -142,4 +156,4 @@ cargo nextest run --workspace
 
 ## License
 
-To be determined (`TBD`) via an ADR prior to the first public release.
+Latch (`latch-ide`) is open-source software licensed under the [Apache License, Version 2.0](LICENSE).
