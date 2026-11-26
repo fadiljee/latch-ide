@@ -54,6 +54,7 @@ token
 /skills/
 /scripts/install-skills.sh
 /prd/
+/docs/
 /AGENTS.md
 **/AGENTS_*.md
 /CLAUDE.md

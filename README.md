@@ -4,152 +4,142 @@
 
 # Latch (`latch-ide`)
 
-> Runtime, orkestrator, dan fondasi Agent IDE berbasis **100% Rust** dalam satu binary tunggal (`latch` / `latchd`). Hemat RAM, terisolasi di `git worktree`, terukur, dan dibangun tanpa Electron.
+> A **100% Rust** AI coding-agent runtime, orchestrator, and Agent IDE foundation in a single binary (`latch` / `latchd`). Low memory footprint, `git worktree` isolation, observable by design, and built without Electron.
 
 ![status](https://img.shields.io/badge/status-v0.1--alpha-blue)
 ![rust](https://img.shields.io/badge/rust-1.85%2B-orange)
 ![license](https://img.shields.io/badge/license-TBD-lightgrey)
 
-## Kenapa Latch Dibangun
+## Why Latch Exists
 
-Menjalankan banyak CLI agen AI (`claude`, `codex`, `opencode`, `gemini`, atau skrip agen kustom) secara paralel sering memunculkan empat masalah:
+Running multiple AI coding CLIs (`claude`, `codex`, `opencode`, `gemini`, or custom agent scripts) in parallel creates four recurring problems:
 
-1. **Boros RAM.** Orkestrator berbasis Electron/Chromium memakan ratusan MB hingga GB saat beberapa sesi aktif.
-2. **Isolasi lemah.** Agen otonom tanpa worktree dan batas sandbox berisiko menimpa berkas antar-tugas atau menyentuh kredensial lokal.
-3. **Kurang teramati.** Sulit memantau token, biaya, dan *infinite loop* secara *real-time*.
-4. **Alur kerja manual.** Koordinasi antar-agen (perencana → pembuat kode → verifikasi → review diff → merge) masih serba *copy-paste*.
+1. **High RAM consumption.** Electron/Chromium-based orchestrators consume hundreds of megabytes to gigabytes as concurrent sessions scale.
+2. **Weak isolation.** Autonomous agents without isolated worktrees and OS sandboxing can overwrite each other's changes or access local credentials.
+3. **Lack of visibility.** Real-time token usage, cost tracking, and runaway loop protection are rarely built into local workflows.
+4. **Manual handoffs.** Coordinating multi-agent workflows (plan → implement → verify → review diff → merge) still relies on copy-paste.
 
-## Status Implementasi & Roadmap
+## Implementation Status & Roadmap
 
-| Area | Cakupan | Fase | Status |
+| Area | Scope | Phase | Status |
 | --- | --- | --- | --- |
-| **Daemon & State** | Single binary (`latch` / `latchd`), UDS JSON-RPC 2.0 (`0600` + `SO_PEERCRED`), SQLite WAL aktor tunggal, rekonsiliasi startup & pembersihan worktree yatim | `v0.1` | Selesai |
-| **Git Engine** | Validasi `git >= 2.38`, `git worktree` + branch `latch/<project>/<short-id>`, diff terpaginasi, simulasi konflik `git merge-tree`, squash/merge & discard idempoten | `v0.1` | Selesai |
-| **PTY Pool** | `portable-pty` paralel, ring buffer 1 MiB + rolling log `0600`, batching 8–16 ms + backpressure, layar `vt100` + resize, `SIGSTOP`/`SIGCONT`/`kill` | `v0.1` | Selesai |
-| **TUI & CLI** | CLI `clap` lengkap (`daemon`, `project`, `run`, `session`, `config`, `tui`) & TUI `ratatui` interaktif dengan panel ANSI, diff, dan konfirmasi merge/kill/discard | `v0.1` | Selesai |
-| **Workbench Scaffold** | Kerangka `web/` (Vite + React + TS strict + Tailwind + Zustand + i18n `id`/`en` + ESLint `jsx-a11y` + Vitest + gerbang ukuran bundel) | `I0` | Selesai |
-| **LLM Proxy & Web PWA** | Reverse proxy HTTP/SSE, telemetri biaya, circuit breaker, REST/WS + Web PWA tersemat (`rust-embed`) | `v0.2` / `I1` | Terjadwal |
-| **OS Sandbox & Approvals** | Landlock filesystem jail (Linux), denylist sensitif, approval gate interaktif | `v0.3` / `I2` | Terjadwal |
-| **DAG Pipeline & IDE Penuh** | `workflow.toml` DAG, retry gate, fan-out arena, hibernasi, editor CM6, pencarian, LSP tersandbox | `v1.0`–`v1.2` | Terjadwal |
+| **Daemon & State** | Single binary (`latch` / `latchd`), UDS JSON-RPC 2.0 (`0600` + `SO_PEERCRED`), single-writer SQLite WAL actor, startup reconciliation & orphan worktree cleanup | `v0.1` | Done |
+| **Git Engine** | `git >= 2.38` check, isolated `git worktree` + `latch/<project>/<short-id>` branches, paginated diffs (including untracked files), `git merge-tree` conflict simulation, idempotent squash/merge & discard | `v0.1` | Done |
+| **PTY Pool** | Parallel `portable-pty` sessions, 1 MiB ring buffer + `0600` rolling logs, 8–16 ms output batching with slow-client backpressure, `vt100` virtual screen + resize, `SIGSTOP`/`SIGCONT`/`kill` | `v0.1` | Done |
+| **TUI & CLI** | Full `clap` CLI (`daemon`, `project`, `run`, `session`, `config`, `tui`) & interactive `ratatui` TUI with ANSI terminal pane, diff view, and merge/kill/discard confirmation modals | `v0.1` | Done |
+| **Workbench Scaffold** | `web/` foundation (Vite + React + strict TypeScript + Tailwind CSS + Zustand + `id`/`en` i18n + ESLint `jsx-a11y` + Vitest + gzipped bundle-size gate) | `I0` | Done |
+| **LLM Proxy & Web PWA** | Local HTTP/SSE reverse proxy, token/cost telemetry, automated circuit breaker, REST/WS + embedded Web PWA (`rust-embed`) | `v0.2` / `I1` | Planned |
+| **OS Sandbox & Approvals** | Linux Landlock filesystem jail, sensitive path denylist, interactive approval gates | `v0.3` / `I2` | Planned |
+| **DAG Pipelines & Full IDE** | Declarative `workflow.toml` DAG, retry gates, fan-out arena, idle hibernation, CodeMirror 6 editor, fuzzy/regex search, sandboxed LSP | `v1.0`–`v1.2` | Planned |
 
-## Hasil Benchmark Awal (`v0.1`)
+## Initial Benchmark Results (`v0.1`)
 
-Lihat rincian lengkap di [`docs/perf/v0.1-fondasi.md`](docs/perf/v0.1-fondasi.md):
+Measured on Linux x86_64 using [`scripts/check-binary.sh`](scripts/check-binary.sh), [`scripts/bench-rss.sh`](scripts/bench-rss.sh), and [`web/scripts/check-bundle-size.mjs`](web/scripts/check-bundle-size.mjs):
 
-| Metrik | Hasil Terukur | Anggaran |
+| Metric | Measured | Budget |
 | --- | --- | --- |
-| Ukuran binary rilis (`latch`) | **4,21 MiB** | `< 30 MiB` |
-| RSS daemon idle (`VmRSS`) | **10,40 MiB** (`10.652 kB`) | `≤ 25 MiB` |
-| Overhead RAM per sesi PTY aktif | **0,25 MiB** (`253 kB` / sesi) | `≤ 5 MiB` |
-| Bundel awal Web Workbench (gzip) | **72,70 KiB** (`74.447 B`) | `≤ 600 KiB` |
+| Release binary size (`latch`) | **4.21 MiB** | `< 30 MiB` |
+| Idle daemon RSS (`VmRSS`) | **10.40 MiB** (`10,652 kB`) | `≤ 25 MiB` |
+| Per-session PTY RAM overhead | **0.25 MiB** (`253 kB` / session) | `≤ 5 MiB` |
+| Initial Web Workbench bundle (gzip) | **72.70 KiB** (`74,447 B`) | `≤ 600 KiB` |
 
-## Struktur Workspace
+## Workspace Structure
 
 ```text
 latch-ide/
-├── Cargo.toml                 # Cargo workspace root + lints ketat (#![forbid(unsafe_code)], no unwrap/expect)
-├── cli/                       # Entrypoint binary tunggal `latch` (alias `latchd`)
+├── Cargo.toml                 # Cargo workspace root + strict lints (#![forbid(unsafe_code)], no unwrap/expect)
+├── cli/                       # Single binary entrypoint `latch` (with `latchd` argv[0] alias)
 ├── crates/
-│   ├── core/                  # Model domain UUID v7, config/profil validator, redaksi rahasia, protokol UDS
-│   ├── store/                 # SQLite bundled (aktor penulis tunggal + migrasi 0001)
-│   ├── git-engine/            # Manajemen worktree, diff, merge-tree, squash/merge & discard
-│   ├── pty-pool/              # Kolam PTY, ring buffer, rolling log, batching 8–16 ms, vt100
-│   ├── sandbox/               # Trait SandboxProvider & NoopProvider (Landlock pada v0.3)
-│   ├── daemon/                # SessionManager, server UDS, rekonsiliasi startup, logging ter-redaksi
-│   ├── tui/                   # Antarmuka terminal ratatui (klien tipis via UDS)
-│   ├── proxy/                 # Stub Fase 2: reverse proxy LLM & circuit breaker
-│   ├── dag/                   # Stub Fase 4: eksekutor DAG workflow.toml
-│   ├── fs-service/            # Stub IDE: akses berkas aman di akar worktree
-│   ├── search/                # Stub IDE: indeks fuzzy & pencarian teks
-│   ├── lsp-host/              # Stub IDE: server LSP tersandbox
-│   ├── agent-proto/           # Stub IDE: adaptor protokol agen terstruktur
-│   └── workbench-api/         # Stub IDE: rute REST/WS & token ber-scope
-├── web/                       # Kerangka Agent IDE Workbench (React + TypeScript + Vite + Tailwind)
-├── scripts/                   # Gerbang build/ukuran (check-binary.sh) dan benchmark RAM (bench-rss.sh)
-└── docs/                      # Spesifikasi lengkap: PRD, arsitektur, API, keamanan, ADR, dan Agent IDE
+│   ├── core/                  # UUID v7 domain models, config/profile validation, secret redaction, UDS protocol
+│   ├── store/                 # Bundled SQLite (single-writer actor + 0001 migration)
+│   ├── git-engine/            # Worktrees, diffs, merge-tree simulation, squash/merge & discard
+│   ├── pty-pool/              # PTY pool, ring buffer, rolling logs, 8–16 ms batching, vt100
+│   ├── sandbox/               # SandboxProvider trait & NoopProvider (Landlock in v0.3)
+│   ├── daemon/                # SessionManager, UDS server, startup reconciliation, redacted tracing logs
+│   ├── tui/                   # Thin ratatui terminal UI client over UDS
+│   ├── proxy/                 # Phase 2 stub: local LLM reverse proxy & circuit breaker
+│   ├── dag/                   # Phase 4 stub: workflow.toml DAG executor
+│   ├── fs-service/            # IDE stub: guarded worktree file service
+│   ├── search/                # IDE stub: fuzzy file index & streaming text search
+│   ├── lsp-host/              # IDE stub: sandboxed LSP host
+│   ├── agent-proto/           # IDE stub: structured agent protocol adapter
+│   └── workbench-api/         # IDE stub: REST/WS routes & scoped token auth
+├── web/                       # Agent IDE Workbench frontend (React + TypeScript + Vite + Tailwind)
+└── scripts/                   # Binary size/static gate (check-binary.sh) and RSS benchmark (bench-rss.sh)
 ```
 
 ## Quick Start (`v0.1`)
 
-### Prasyarat
+### Prerequisites
 
-- Rust stable `>= 1.85` (dan `musl-tools` + target `x86_64-unknown-linux-musl` bila membangun binary statis musl)
+- Rust stable `>= 1.85` (plus `musl-tools` and target `x86_64-unknown-linux-musl` for static musl builds)
 - `git >= 2.38`
-- Node.js `>= 22` (opsional, hanya untuk membangun frontend `web/`)
+- Node.js `>= 22` (optional; build-time only for `web/`)
 
-### Build & Jalankan
+### Build & Run
 
 ```bash
-# 1. Build binary rilis
+# 1. Build the release binary
 cargo build --release -p latch-cli
-# atau build statis musl (butuh `musl-tools` & `rustup target add x86_64-unknown-linux-musl`):
+# Or build & check size (uses static musl automatically if musl-gcc is installed):
 ./scripts/check-binary.sh
 
-# 2. Validasi konfigurasi (~/.config/latch/config.toml & agents.toml)
+# 2. Validate configuration (~/.config/latch/config.toml & agents.toml)
 ./target/release/latch config check
 
-# 3. Mulai daemon latar belakang (atau tambahkan --foreground untuk systemd)
+# 3. Start the daemon (or pass --foreground for systemd / supervisors)
 ./target/release/latch daemon start
 ./target/release/latch daemon status
 
-# 4. Daftarkan repositori Git
-./target/release/latch project add /path/ke/repo-anda --name my-repo
+# 4. Register a Git repository
+./target/release/latch project add /path/to/your-repo --name my-repo
 
-# 5. Jalankan sesi agen pada worktree + branch terisolasi (profil bawaan: `shell`, `sleeper`, atau definisi di agents.toml)
-./target/release/latch run --project my-repo --profile shell --task "Tambahkan endpoint health"
+# 5. Start an isolated agent session (built-in profiles: `shell`, `sleeper`, or custom entries in agents.toml)
+./target/release/latch run --project my-repo --profile shell --task "Add health endpoint"
 
-# 6. Pantau lewat CLI atau buka TUI interaktif
+# 6. Monitor from the CLI or open the interactive TUI
 ./target/release/latch session ls
 ./target/release/latch tui
 
-# 7. Tinjau diff, cek konflik merge-tree, lalu squash-merge atau buang
+# 7. Inspect diff, run merge-tree conflict check, then squash-merge or discard
 ./target/release/latch session diff <session-id>
 ./target/release/latch session merge-check <session-id>
 ./target/release/latch session merge <session-id> --squash
-# atau:
+# Or discard:
 ./target/release/latch session discard <session-id>
 ```
 
-> Variabel lingkungan opsional untuk isolasi lokasi konfigurasi/state: `LATCH_CONFIG_DIR`, `LATCH_STATE_DIR`, `LATCH_SOCKET`, dan `LATCH_LOG`.
+> Optional environment overrides for isolated state/testing: `LATCH_CONFIG_DIR`, `LATCH_STATE_DIR`, `LATCH_SOCKET`, and `LATCH_LOG`.
 
-## Pengembangan & Verifikasi
+## Development & Verification
 
 ```bash
-# Format, lint ketat, dan seluruh tes unit + integrasi end-to-end
+# Formatting, strict lints, and all unit + end-to-end tests
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo nextest run --workspace
 
-# Verifikasi ukuran binary (< 30 MiB) dan anggaran RAM daemon (idle <= 25 MiB, <= 5 MiB/sesi)
+# Binary size gate (< 30 MiB) and daemon RSS budget (<= 25 MiB idle, <= 5 MiB/session)
 ./scripts/check-binary.sh
 ./scripts/bench-rss.sh
 
-# Verifikasi frontend Workbench (lint + a11y + typecheck + Vitest + batas bundel <= 600 KiB gzip)
+# Workbench frontend checks (lint + jsx-a11y + typecheck + Vitest + <= 600 KiB gzip gate)
 (cd web && npm ci && npm run lint && npm run typecheck && npm run test && npm run build)
 ```
 
-## Dokumentasi
+## Project Guides
 
-| Dokumen | Isi |
-| --- | --- |
-| [`docs/PRD.md`](docs/PRD.md) | Product Requirements Document inti |
-| [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md) | Daftar FR-01..FR-23 dan NFR-01..NFR-07 |
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Arsitektur crate, siklus sesi, dan alur data |
-| [`docs/DATA_MODEL.md`](docs/DATA_MODEL.md) | Skema SQLite, migrasi, dan mesin status sesi |
-| [`docs/API.md`](docs/API.md) | Kontrak UDS JSON-RPC 2.0, REST, dan WebSocket |
-| [`docs/SECURITY.md`](docs/SECURITY.md) | Model ancaman, kebijakan sandbox Landlock, dan redaksi rahasia |
-| [`docs/NFR_BUDGET.md`](docs/NFR_BUDGET.md) | Anggaran RAM/ukuran/latensi & metodologi ukur |
-| [`docs/ROADMAP.md`](docs/ROADMAP.md) & [`docs/TASKS.md`](docs/TASKS.md) | Roadmap rilis dan breakdown task |
-| [`docs/ide/README.md`](docs/ide/README.md) | Paket spesifikasi **Agent IDE (Workbench)** |
-| [`docs/adr/`](docs/adr/README.md) | Architecture Decision Records (ADR-0001..0017) |
-| [`CONTRIBUTING.md`](CONTRIBUTING.md) & [`CHANGELOG.md`](CHANGELOG.md) | Panduan kontribusi dan catatan perubahan |
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — Local setup, coding standards, PR workflow, and test requirements.
+- [`SECURITY.md`](SECURITY.md) — Vulnerability disclosure policy and core security invariants.
+- [`CHANGELOG.md`](CHANGELOG.md) — Release history and upcoming changes.
 
-## Keamanan & Privasi
+## Security
 
-- **Default aman:** daemon UDS mengikat izin `0600` + verifikasi `SO_PEERCRED` UID; bind HTTP (v0.2) dibatasi ke `127.0.0.1`.
-- **Tanpa kebocoran rahasia (`NFR-05`):** log daemon dan catatan basis data otomatis melalui lapisan redaksi rahasia (`sk-...`, `AKIA...`, `ghp_...`, `Bearer ...`, `Authorization`, `x-api-key`).
-- **Isolasi proses (`NFR-06`):** crash atau `kill -9` pada proses agen tidak menjatuhkan daemon atau sesi lain; restart daemon otomatis merekonsiliasi status dan menyapu worktree yatim.
+- **Secure by default:** the local UDS listener enforces `0600` socket permissions and `SO_PEERCRED` UID verification; future HTTP/WS listeners bind exclusively to `127.0.0.1`.
+- **Zero secret leakage (`NFR-05`):** daemon logs and SQLite summaries automatically pass through a secret redaction layer (`sk-...`, `AKIA...`, `ghp_...`, `Bearer ...`, `Authorization`, `x-api-key`).
+- **Crash isolation (`NFR-06`):** crashing or `kill -9` on an agent process never brings down the daemon or sibling sessions; daemon restarts reconcile dead PIDs and clean up orphaned worktrees.
+- Please report security vulnerabilities privately as described in [`SECURITY.md`](SECURITY.md).
 
-## Lisensi
+## License
 
-Belum ditentukan (`TBD`). Akan diputuskan melalui ADR sebelum rilis publik pertama.
+To be determined (`TBD`) via an ADR prior to the first public release.
