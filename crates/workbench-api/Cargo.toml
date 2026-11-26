@@ -1,0 +1,16 @@
+[package]
+name = "latch-workbench-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+latch-agent-proto = { workspace = true }
+latch-core = { workspace = true }
+latch-fs-service = { workspace = true }
+latch-search = { workspace = true }
+thiserror = { workspace = true }

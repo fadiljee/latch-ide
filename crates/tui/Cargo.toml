@@ -1,0 +1,17 @@
+[package]
+name = "latch-tui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+crossterm = { workspace = true }
+latch-core = { workspace = true }
+ratatui = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+vt100 = { workspace = true }

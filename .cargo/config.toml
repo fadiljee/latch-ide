@@ -1,0 +1,7 @@
+# Konfigurasi Cargo untuk pembangunan lokal cepat dengan clang + lld (T-003).
+# Untuk target x86_64-unknown-linux-musl, pasang `musl-tools` agar `cc-rs`
+# memakai `musl-gcc` dengan header musl asli untuk SQLite bundled.
+
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]

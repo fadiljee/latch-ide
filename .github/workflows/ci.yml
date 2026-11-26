@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust-check:
+    name: Rust fmt, clippy & nextest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Run clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Run tests
+        run: cargo nextest run --workspace
+
+  musl-release:
+    name: Static musl binary & size gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: musl
+      - name: Install musl-tools, clang & lld
+        run: sudo apt-get update && sudo apt-get install -y musl-tools clang lld
+      - name: Build static binary & verify size
+        run: ./scripts/check-binary.sh --require-musl
+      - name: Verify RSS budget
+        run: ./scripts/bench-rss.sh
+
+  web:
+    name: Workbench frontend & bundle gate
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run test
+      - run: npm run build
