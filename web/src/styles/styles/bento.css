@@ -1,0 +1,9 @@
+[data-style="bento"] {
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --r-xl: 20px;
+  --gap-panel: 8px;
+  --panel-border: 1px;
+  --panel-shadow: 0 1px 2px rgb(0 0 0 / 0.2), 0 8px 20px rgb(0 0 0 / 0.14);
+}

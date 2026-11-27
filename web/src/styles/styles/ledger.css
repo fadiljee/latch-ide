@@ -1,0 +1,9 @@
+[data-style="ledger"] {
+  --r-sm: 2px;
+  --r-md: 3px;
+  --r-lg: 4px;
+  --r-xl: 6px;
+  --gap-panel: 0px;
+  --panel-border: 1px;
+  --panel-shadow: none;
+}

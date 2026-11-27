@@ -4,6 +4,15 @@ Format mengikuti [Keep a Changelog](https://keepachangelog.com/id-ID/1.1.0/) dan
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-27
+
+### Added
+- **Arsitektur UI Modular `UI-SPEC-latch-ide-tauri-react.md` (`web/` & `desktop/`):**
+  - **CSS-First Design System Tailwind v4 (`web/src/styles/` & `web/src/theme/`)**: 4 gaya tata letak (`tonal`, `ledger`, `bento`, `glass` dengan fallback WebKitGTK) × 2 mode (`dark`, `light`, plus `system`), aksen dinamis (`--accent`, `--accent-soft`, `--on-accent`), zero inline `<script>` (boot via `public/theme-boot.js`), dan 100% token semantik di seluruh komponen `.tsx`.
+  - **Domain Zustand Stores & Transport (`web/src/state/` & `web/src/transport/`)**: store terpisah (`hosts`, `sessions`, `messages`, `layout`, `ui`, `usage`, `notifications`, `selectors`), auto-reconnect WebSocket dengan backoff eksponensial + resync penuh, dan pembungkus native Tauri (`transport/native.ts`).
+  - **Terminal `@xterm/xterm` & Shell Desktop Lengkap (`web/src/layout/` & `web/src/features/`)**: `TitleBar` dengan `data-tauri-drag-region` & window controls Tauri, `Sidebar` toggle Status / Pohon Proyek, `SplitLayout` multi-pane (`TerminalView` lazy via `pty-stream.ts` + `@xterm/addon-fit`, `ChatView` + `Composer`, `DiffView` lazy), `SidePanel` (`Git` conflict radar, `Approvals`, `Traffic` proxy lazy), `CommandPalette` (`Ctrl+K`/`Cmd+K`), halaman `Automations` (pipeline DAG & `CompareView` arena), `Bots`, `Hosts`, `Usage` (`latch gc`), dan `Settings`.
+  - **Floating Control & Upgrade Tauri v2 (`desktop/` & `web/floating.html`)**: multi-page Vite build (`index.html` + `floating.html`), perintah native `latch_window_action` & `latch_toggle_floating`, serta window `main` (`1440x900`, frameless) + `floating` (`360x400`, always-on-top).
+
 ## [1.1.0] - 2026-11-27
 
 ### Added

@@ -1,0 +1,40 @@
+@import "tailwindcss";
+@import "./tokens.css";
+@import "./palettes/dark.css";
+@import "./palettes/light.css";
+@import "./styles/tonal.css";
+@import "./styles/ledger.css";
+@import "./styles/bento.css";
+@import "./styles/glass.css";
+
+@theme inline {
+  --color-app: var(--bg-app);
+  --color-sidebar: var(--bg-sidebar);
+  --color-surface: var(--bg-surface);
+  --color-raised: var(--bg-surface-raised);
+  --color-hover: var(--bg-hover);
+  --color-selected: var(--bg-selected);
+  --color-line: var(--border-subtle);
+  --color-line-strong: var(--border-strong);
+  --color-fg: var(--text-primary);
+  --color-fg-2: var(--text-secondary);
+  --color-fg-3: var(--text-muted);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-on-accent: var(--on-accent);
+  --color-working: var(--status-working);
+  --color-needs: var(--status-needs-you);
+  --color-done: var(--status-done);
+  --color-idle: var(--status-idle);
+  --color-danger: var(--status-error);
+  --color-terminal: var(--terminal-bg);
+  --color-terminal-fg: var(--terminal-fg);
+
+  --radius-sm: var(--r-sm);
+  --radius-md: var(--r-md);
+  --radius-lg: var(--r-lg);
+  --radius-xl: var(--r-xl);
+
+  --font-sans: var(--font-ui);
+  --font-mono: var(--font-code);
+}

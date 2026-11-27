@@ -1,0 +1,20 @@
+[data-mode="dark"] {
+  --bg-app: #0f1114;
+  --bg-sidebar: #13161a;
+  --bg-surface: #171b20;
+  --bg-surface-raised: #1d2228;
+  --bg-hover: #1f252c;
+  --bg-selected: color-mix(in oklab, var(--accent) 16%, transparent);
+  --border-subtle: #242a31;
+  --border-strong: #323a43;
+  --text-primary: #e7eaee;
+  --text-secondary: #a7afb9;
+  --text-muted: #8b949e;
+  --status-working: #4da3ff;
+  --status-needs-you: #ff9f43;
+  --status-done: #3ecf8e;
+  --status-idle: #8b949e;
+  --status-error: #ff5d6c;
+  --terminal-bg: #0b0d10;
+  --terminal-fg: #e7eaee;
+}

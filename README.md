@@ -15,7 +15,7 @@
 
 <p align="center">
   <a href="https://github.com/fadiljee/latch-ide/actions/workflows/ci.yml"><img src="https://github.com/fadiljee/latch-ide/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
-  <a href="https://github.com/fadiljee/latch-ide/releases/tag/v1.0.1"><img src="https://img.shields.io/badge/release-v1.0.1-blue" alt="Release: v1.0.1" /></a>
+  <a href="https://github.com/fadiljee/latch-ide/releases/tag/v1.2.0"><img src="https://img.shields.io/badge/release-v1.2.0-blue" alt="Release: v1.2.0" /></a>
   <img src="https://img.shields.io/badge/rust-1.85%2B-orange" alt="Rust 1.85+" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-green" alt="License: Apache-2.0" /></a>
   <a href="CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen" alt="PRs Welcome" /></a>
@@ -42,7 +42,8 @@ Running multiple AI coding CLIs (`claude`, `codex`, `opencode`, `gemini`, or cus
 | **LLM Proxy & Web PWA** | Local HTTP/SSE reverse proxy (`rustls`), token/cost telemetry (`pricing.toml`), automated circuit breaker (`< 1 s`), REST/WS + embedded Web PWA (`rust-embed`, CSP), HMAC webhooks & SSH remote tunnel | `v0.2` | Done |
 | **OS Sandbox & Approvals** | Linux Landlock filesystem jail (`ABI v1–v5`), toolchain presets, sensitive path denylist, egress domain allowlist, PATH shim, interactive Approval Gate (REST/WS + Web Inbox) | `v0.3` | Done |
 | **DAG Pipelines, Arena, Hibernation & GC** | Declarative `workflow.toml` DAG, strict templating, retry gates, Fan-Out Arena matrix & winner selection, restart recovery, TUI + Web Arena UI, idle hibernation + snapshots, `latch gc` retention | `v1.0` | Done |
-| **Full Agent IDE** | CodeMirror 6 editor, fuzzy/regex search, sandboxed LSP, structured agent protocol | `v1.1`–`v1.2` | Planned |
+| **Desktop App & Modular UI** | Native **Tauri v2** shell (`desktop/`: `.AppImage` + `.deb`, frameless window + floating control), `@xterm/xterm` PTY terminal, 4 layout styles (`tonal`/`ledger`/`bento`/`glass`) × 2 modes, split panes, command palette, `Git` / `Traffic` / `Usage` panels | `v1.2` | Done |
+| **Full Agent IDE** | CodeMirror 6 editor, fuzzy/regex search, sandboxed LSP, structured agent protocol | `v1.3+` | Planned |
 
 ## Benchmark Results (`v0.2`)
 
@@ -76,23 +77,25 @@ latch-ide/
 │   ├── lsp-host/              # IDE stub: sandboxed LSP host
 │   ├── agent-proto/           # IDE stub: structured agent protocol adapter
 │   └── workbench-api/         # IDE stub: REST/WS routes & scoped token auth
-├── web/                       # Agent IDE Workbench PWA (React + TypeScript + Vite + Tailwind + Pipeline Arena)
+├── desktop/                   # Native Tauri v2 desktop app (.AppImage & .deb) + floating control window
+├── web/                       # Agent IDE UI (React 19 + TS strict + Tailwind v4 CSS tokens + xterm.js + Zustand)
 └── scripts/                   # Installer (install.sh), binary size/static gate (check-binary.sh), RSS benchmark (bench-rss.sh)
 ```
 
 ## Quick Start
 
-### Install via `curl` — Zero Setup (Linux x86_64 static musl binary)
+### Install via `curl` — Zero Setup (Linux x86_64 Desktop App + CLI)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/fadiljee/latch-ide/main/scripts/install.sh | sh
 
-# Ready immediately — no manual daemon/config setup needed:
-latch        # auto-starts daemon, registers current Git repo, opens TUI
+# Ready immediately — launch "Latch IDE" from your Linux app menu, or run:
+latch-ide    # opens native Tauri v2 Desktop App (auto-starts daemon & injects token)
+latch        # opens TUI
 latch web    # opens Web Workbench at http://127.0.0.1:7878
 ```
 
-> Installs `latch` (and `latchd` symlink) to `~/.local/bin` with SHA-256 verification, updates your shell `PATH`, and starts the daemon automatically. Built-in profiles (`claude`, `codex`, `gemini`, `opencode`, `shell`) work out of the box. Override with `LATCH_VERSION=v1.0.1`, `LATCH_INSTALL_DIR=/usr/local/bin`, or `LATCH_NO_START=1`.
+> Installs `latch-ide` (`.AppImage` + `.desktop` menu shortcut), `latch` (and `latchd` symlink) to `~/.local/bin` with SHA-256 verification, updates your shell `PATH`, and starts the daemon automatically. Built-in profiles (`claude`, `codex`, `gemini`, `opencode`, `shell`) work out of the box. Override with `LATCH_VERSION=v1.2.0`, `LATCH_INSTALL_DIR=/usr/local/bin`, or `LATCH_NO_START=1`.
 
 ### Build from Source
 
