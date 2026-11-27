@@ -15,7 +15,7 @@
 
 <p align="center">
   <a href="https://github.com/fadiljee/latch-ide/actions/workflows/ci.yml"><img src="https://github.com/fadiljee/latch-ide/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
-  <a href="https://github.com/fadiljee/latch-ide/releases/tag/v0.1.0"><img src="https://img.shields.io/badge/release-v0.1.0-blue" alt="Release: v0.1.0" /></a>
+  <a href="https://github.com/fadiljee/latch-ide/releases/tag/v0.2.0"><img src="https://img.shields.io/badge/release-v0.2.0-blue" alt="Release: v0.2.0" /></a>
   <img src="https://img.shields.io/badge/rust-1.85%2B-orange" alt="Rust 1.85+" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-green" alt="License: Apache-2.0" /></a>
   <a href="CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen" alt="PRs Welcome" /></a>
@@ -39,20 +39,20 @@ Running multiple AI coding CLIs (`claude`, `codex`, `opencode`, `gemini`, or cus
 | **PTY Pool** | Parallel `portable-pty` sessions, 1 MiB ring buffer + `0600` rolling logs, 8–16 ms output batching with slow-client backpressure, `vt100` virtual screen + resize, `SIGSTOP`/`SIGCONT`/`kill` | `v0.1` | Done |
 | **TUI & CLI** | Full `clap` CLI (`daemon`, `project`, `run`, `session`, `config`, `tui`) & interactive `ratatui` TUI with ANSI terminal pane, diff view, and merge/kill/discard confirmation modals | `v0.1` | Done |
 | **Workbench Scaffold** | `web/` foundation (Vite + React + strict TypeScript + Tailwind CSS + Zustand + `id`/`en` i18n + ESLint `jsx-a11y` + Vitest + gzipped bundle-size gate) | `I0` | Done |
-| **LLM Proxy & Web PWA** | Local HTTP/SSE reverse proxy, token/cost telemetry, automated circuit breaker, REST/WS + embedded Web PWA (`rust-embed`) | `v0.2` / `I1` | Planned |
+| **LLM Proxy & Web PWA** | Local HTTP/SSE reverse proxy (`rustls`), token/cost telemetry (`pricing.toml`), automated circuit breaker (`< 1 s`), REST/WS + embedded Web PWA (`rust-embed`, CSP), HMAC webhooks & SSH remote tunnel | `v0.2` | Done |
 | **OS Sandbox & Approvals** | Linux Landlock filesystem jail, sensitive path denylist, interactive approval gates | `v0.3` / `I2` | Planned |
 | **DAG Pipelines & Full IDE** | Declarative `workflow.toml` DAG, retry gates, fan-out arena, idle hibernation, CodeMirror 6 editor, fuzzy/regex search, sandboxed LSP | `v1.0`–`v1.2` | Planned |
 
-## Initial Benchmark Results (`v0.1`)
+## Benchmark Results (`v0.2`)
 
 Measured on Linux x86_64 using [`scripts/check-binary.sh`](scripts/check-binary.sh), [`scripts/bench-rss.sh`](scripts/bench-rss.sh), and [`web/scripts/check-bundle-size.mjs`](web/scripts/check-bundle-size.mjs):
 
 | Metric | Measured | Budget |
 | --- | --- | --- |
-| Release binary size (`latch`) | **4.21 MiB** | `< 30 MiB` |
-| Idle daemon RSS (`VmRSS`) | **10.40 MiB** (`10,652 kB`) | `≤ 25 MiB` |
-| Per-session PTY RAM overhead | **0.25 MiB** (`253 kB` / session) | `≤ 5 MiB` |
-| Initial Web Workbench bundle (gzip) | **72.70 KiB** (`74,447 B`) | `≤ 600 KiB` |
+| Release binary size (`latch`, incl. embedded Web PWA) | **8.18 MiB** | `< 30 MiB` |
+| Idle daemon RSS (`VmRSS`) | **13.59 MiB** (`13,916 kB`) | `≤ 25 MiB` |
+| Per-session PTY RAM overhead | **0.25 MiB** (`261 kB` / session) | `≤ 5 MiB` |
+| Initial Web Workbench bundle (gzip) | **75.81 KiB** (`77,630 B`) | `≤ 600 KiB` |
 
 ## Workspace Structure
 

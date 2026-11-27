@@ -253,3 +253,131 @@ async fn secret_canary_never_leaks_to_sqlite_or_logs_and_breaker_trips_session()
 
     manager.request_shutdown().await;
 }
+
+#[tokio::test]
+async fn budget_circuit_breaker_trips_session_under_one_second() {
+    let repo = init_temp_git_repo();
+    let state_root = TempDir::new().unwrap();
+    let paths = RuntimePaths {
+        config_dir: state_root.path().join("config"),
+        state_dir: state_root.path().join("state"),
+        socket_path: state_root.path().join("latch.sock"),
+    };
+
+    // Mock upstream mengembalikan usage besar (gpt-4o: 200k input + 100k output = $1.50 per call)
+    let mock_app = Router::new().route(
+        "/v1/chat/completions",
+        post(|| async {
+            Response::builder()
+                .status(StatusCode::OK)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"id":"c-budget","model":"gpt-4o","choices":[],"usage":{"prompt_tokens":200000,"completion_tokens":100000}}"#,
+                ))
+                .unwrap()
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mock_addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, mock_app).await;
+    });
+
+    let mut cfg = LatchConfig::default();
+    cfg.circuit_breaker.max_session_budget_usd = 1.0;
+
+    let mut profiles = BTreeMap::new();
+    profiles.insert(
+        "budget-agent".to_string(),
+        AgentProfile {
+            command: "sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                "printf 'PROXY_URL=%s\\n' \"$OPENAI_BASE_URL\"; sleep 30".to_string(),
+            ],
+            env: BTreeMap::new(),
+            pass_env: Vec::new(),
+            proxy_mode: ProxyMode::Injected,
+            proxy_provider: Some("openai".to_string()),
+            resume_args: Vec::new(),
+            extra_rw: Vec::new(),
+            extra_ro: Vec::new(),
+        },
+    );
+
+    let shutdown = Arc::new(Notify::new());
+    let manager = SessionManager::start(
+        paths,
+        cfg,
+        AgentsConfig { profiles },
+        Arc::new(NoopProvider),
+        shutdown,
+    )
+    .await
+    .unwrap();
+    manager
+        .proxy_registry()
+        .set_upstream("openai", format!("http://{mock_addr}"))
+        .await;
+    manager
+        .add_project(ProjectAddParams {
+            repo_path: repo.path().to_string_lossy().to_string(),
+            name: Some("budget-demo".to_string()),
+            default_branch: Some("main".to_string()),
+        })
+        .await
+        .unwrap();
+
+    let ses = manager
+        .run_session(SessionRunParams {
+            project: "budget-demo".to_string(),
+            profile: "budget-agent".to_string(),
+            task: "verify budget trip".to_string(),
+            base_ref: None,
+        })
+        .await
+        .unwrap();
+
+    let mut injected_url = None;
+    for _ in 0..40 {
+        if let Ok(snap) = manager.screen_snapshot(&ses.id).await {
+            if let Some(line) = snap.text.lines().find(|l| l.contains("PROXY_URL=")) {
+                if let Some(val) = line.split("PROXY_URL=").nth(1) {
+                    let trimmed = val.trim();
+                    if trimmed.starts_with("http://127.0.0.1:") {
+                        injected_url = Some(trimmed.to_string());
+                        break;
+                    }
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let proxy_url = injected_url.expect("OPENAI_BASE_URL was not injected");
+
+    let client = reqwest::Client::new();
+    let timer = Instant::now();
+    let resp = client
+        .post(format!("{proxy_url}/chat/completions"))
+        .header("content-type", "application/json")
+        .body(r#"{"model":"gpt-4o"}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let _ = resp.bytes().await.unwrap();
+
+    let mut tripped = false;
+    while timer.elapsed() < Duration::from_secs(1) {
+        let cur = manager.get_session(&ses.id).await.unwrap();
+        if cur.status == SessionStatus::Tripped {
+            assert_eq!(cur.trip_reason, Some(TripReason::Budget));
+            tripped = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(tripped, "session did not trip on budget exceeded under 1s");
+
+    manager.request_shutdown().await;
+}

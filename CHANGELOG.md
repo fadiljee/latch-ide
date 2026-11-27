@@ -4,8 +4,10 @@ Format mengikuti [Keep a Changelog](https://keepachangelog.com/id-ID/1.1.0/) dan
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-27
+
 ### Added
-- **Fase 2 — Jalur Proxy LLM & Circuit Breaker (`T-201`–`T-210`):**
+- **Fase 2 — Jalur Proxy LLM & Circuit Breaker (`T-201`–`T-210`, `T-250`):**
   - `latch-core`: parser & tabel harga `pricing.toml` (`PricingTable`) dengan pencocokan prefiks model serta model ringkasan `SessionTelemetrySummary`.
   - `latch-store`: penulisan telemetri batch transaksional (`insert_telemetry_batch`), `list_telemetry`, dan agregat biaya/token/error per sesi dengan redaksi rahasia otomatis.
   - `latch-proxy`: server reverse proxy HTTP/SSE loopback (`axum` + `reqwest`/`rustls`) pada rute `/s/<token>/<provider>/...` dengan token 256-bit yang dicabut otomatis saat sesi berakhir, penerusan header otorisasi tanpa pencatatan, tee parser OpenAI/Anthropic/Google, detektor loop error/tool-call (`SHA-256`), heuristik mode bypass, dan circuit breaker anggaran + error beruntun.
