@@ -1,0 +1,96 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build (e.g. v0.1.0)"
+        required: true
+        type: string
+
+permissions: {}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-musl-release:
+    name: Build & Publish Static Musl Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine release tag
+        id: meta
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          if [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: x86_64-unknown-linux-musl
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-musl
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
+      - name: Install musl-tools, clang & lld
+        run: sudo apt-get update && sudo apt-get install -y musl-tools clang lld
+
+      - name: Verify formatting, clippy & tests
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo nextest run --workspace
+
+      - name: Build static musl binary & check size gate
+        run: ./scripts/check-binary.sh --require-musl
+
+      - name: Verify daemon RSS budget
+        run: ./scripts/bench-rss.sh
+
+      - name: Package release archive & checksums
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          mkdir -p dist
+          STAGE="dist/latch-${TAG}-x86_64-unknown-linux-musl"
+          mkdir -p "$STAGE"
+          cp target/x86_64-unknown-linux-musl/release/latch "$STAGE/latch"
+          cp LICENSE README.md CHANGELOG.md "$STAGE/"
+          tar -C dist -czf "dist/latch-${TAG}-x86_64-unknown-linux-musl.tar.gz" "latch-${TAG}-x86_64-unknown-linux-musl"
+          (cd dist && sha256sum "latch-${TAG}-x86_64-unknown-linux-musl.tar.gz" > SHA256SUMS.txt)
+          ls -lh dist/
+          cat dist/SHA256SUMS.txt
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          ARCHIVE="dist/latch-${TAG}-x86_64-unknown-linux-musl.tar.gz"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ARCHIVE" dist/SHA256SUMS.txt --clobber
+          else
+            gh release create "$TAG" \
+              "$ARCHIVE" \
+              dist/SHA256SUMS.txt \
+              --title "Latch ${TAG}" \
+              --generate-notes
+          fi
