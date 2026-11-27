@@ -92,6 +92,33 @@ ln -sf "${INSTALL_DIR}/latch" "${INSTALL_DIR}/latchd"
 log "Berhasil dipasang: ${INSTALL_DIR}/latch (dan symlink latchd)"
 "${INSTALL_DIR}/latch" --version || true
 
+# Pasang juga Latch IDE Native Desktop App (.AppImage) + shortcut menu aplikasi bila tersedia di rilis
+APPIMAGE_NAME="Latch-IDE-${TAG}-x86_64.AppImage"
+if [ "${LATCH_NO_DESKTOP:-0}" != "1" ] && curl -fsSL "${BASE_URL}/${APPIMAGE_NAME}" -o "${TMP_DIR}/${APPIMAGE_NAME}" 2>/dev/null; then
+  DESKTOP_BIN="${INSTALL_DIR}/latch-ide"
+  install -m 0755 "${TMP_DIR}/${APPIMAGE_NAME}" "$DESKTOP_BIN" 2>/dev/null || {
+    cp "${TMP_DIR}/${APPIMAGE_NAME}" "$DESKTOP_BIN"
+    chmod 0755 "$DESKTOP_BIN"
+  }
+  ICON_DIR="$HOME/.local/share/icons/hicolor/512x512/apps"
+  APP_DIR="$HOME/.local/share/applications"
+  mkdir -p "$ICON_DIR" "$APP_DIR"
+  curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/desktop/icons/icon.png" -o "${ICON_DIR}/latch-ide.png" 2>/dev/null || true
+  cat > "${APP_DIR}/latch-ide.desktop" <<EOF
+[Desktop Entry]
+Name=Latch IDE
+Comment=AI Coding Agent Orchestrator & Desktop Workbench
+Exec=${DESKTOP_BIN}
+Icon=${ICON_DIR}/latch-ide.png
+Terminal=false
+Type=Application
+Categories=Development;IDE;
+StartupWMClass=latch-desktop
+EOF
+  command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$APP_DIR" >/dev/null 2>&1 || true
+  log "Desktop App dipasang: ${DESKTOP_BIN} (shortcut menu aplikasi: Latch IDE)"
+fi
+
 # Tambahkan INSTALL_DIR ke PATH shell secara idempoten bila belum terdaftar
 case ":${PATH}:" in
   *":${INSTALL_DIR}:"*) ;;
@@ -120,4 +147,4 @@ if [ "${LATCH_NO_START:-0}" != "1" ]; then
   "${INSTALL_DIR}/latch" daemon start >/dev/null 2>&1 || true
 fi
 
-log "Siap dipakai! Jalankan 'latch' (TUI) atau 'latch web' (Web Workbench di http://127.0.0.1:7878)."
+log "Siap dipakai! Buka 'Latch IDE' dari menu aplikasi Linux (atau jalankan 'latch-ide')."
