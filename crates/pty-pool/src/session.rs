@@ -3,10 +3,12 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use latch_core::config::AgentProfile;
+use latch_core::id::now_ms;
 use latch_core::sandbox::{SandboxPolicy, SandboxProvider};
 use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;
@@ -118,6 +120,7 @@ struct SubscriberSlot {
 
 struct SessionState {
     pid: Option<u32>,
+    last_activity_ms: AtomicI64,
     master: Mutex<Box<dyn MasterPty + Send>>,
     writer: Mutex<Box<dyn Write + Send>>,
     parser: Mutex<vt100::Parser>,
@@ -137,6 +140,11 @@ impl PtySessionHandle {
         self.state.pid
     }
 
+    /// Stempel waktu (UTC epoch ms) aktivitas input/output terakhir sesi PTY (`T-410`).
+    pub fn last_activity_ms(&self) -> i64 {
+        self.state.last_activity_ms.load(Ordering::Relaxed)
+    }
+
     /// Menulis input byte ke PTY master.
     pub fn write_input(&self, data: &[u8]) -> Result<(), PtyError> {
         let mut guard = self
@@ -146,6 +154,9 @@ impl PtySessionHandle {
             .map_err(|_| PtyError::Io(std::io::Error::other("writer mutex poisoned")))?;
         guard.write_all(data)?;
         guard.flush()?;
+        self.state
+            .last_activity_ms
+            .store(now_ms(), Ordering::Relaxed);
         Ok(())
     }
 
@@ -272,6 +283,18 @@ impl PtyPool {
             .ok_or_else(|| PtyError::NotFound(session_id.to_string()))
     }
 
+    /// Mengembalikan daftar ID sesi aktif yang idle melebihi `idle_ms` (`T-410`).
+    pub async fn idle_sessions(&self, idle_ms: i64) -> Vec<String> {
+        let cutoff = now_ms().saturating_sub(idle_ms);
+        self.sessions
+            .read()
+            .await
+            .iter()
+            .filter(|(_, h)| h.last_activity_ms() <= cutoff)
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
     /// Menjalankan perintah agen di PTY baru, menerapkan sandbox, dan mengawasi exit secara terisolasi.
     pub async fn spawn(
         &self,
@@ -321,6 +344,7 @@ impl PtyPool {
         let log_writer = RollingLogWriter::open(&req.log_path, req.log_max_bytes)?;
         let state = Arc::new(SessionState {
             pid,
+            last_activity_ms: AtomicI64::new(now_ms()),
             master: Mutex::new(pair.master),
             writer: Mutex::new(writer),
             parser: Mutex::new(vt100::Parser::new(rows, cols, req.scrollback_lines)),
@@ -412,6 +436,7 @@ fn spawn_reader_thread(
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
+                        state.last_activity_ms.store(now_ms(), Ordering::Relaxed);
                         let slice = &buf[..n];
                         if let Ok(mut parser) = state.parser.lock() {
                             parser.process(slice);

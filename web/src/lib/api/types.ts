@@ -87,3 +87,47 @@ export interface ApprovalRequest {
   created_at: number;
   expires_at: number | null;
 }
+
+export type PipelineStatus =
+  | "pending"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "tripped"
+  | "cancelled";
+
+export interface PipelineRun {
+  id: string;
+  project_id: string;
+  workflow_name: string;
+  dag_state_json: string;
+  status: PipelineStatus;
+  created_at: number;
+  updated_at: number | null;
+  task: string | null;
+  total_cost_usd: number;
+}
+
+export interface ArenaCandidate {
+  profile: string;
+  session_id: string | null;
+  passed: boolean;
+  duration_ms: number;
+  diff_lines: number;
+  cost_usd: number;
+  output: string;
+}
+
+export interface PipelineArenaStep {
+  step_id: string;
+  status: string;
+  winner: string | null;
+  candidates: ArenaCandidate[];
+}
+
+export interface PipelineArenaResponse {
+  pipeline_id: string;
+  workflow_name: string;
+  status: PipelineStatus;
+  steps: PipelineArenaStep[];
+}

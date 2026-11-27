@@ -22,8 +22,10 @@ use latch_core::model::{
     SessionTelemetrySummary,
 };
 use latch_core::protocol::{
-    ProjectAddParams, SessionDiffParams, SessionListParams, SessionMergeParams, SessionRunParams,
+    GcParams, PipelineArenaSelectParams, PipelineListParams, PipelineRunParams, ProjectAddParams,
+    SessionDiffParams, SessionListParams, SessionMergeParams, SessionRunParams,
 };
+use latch_dag::DagRuntimeState;
 use latch_pty_pool::PtyFrame;
 use rand::RngCore;
 use rust_embed::RustEmbed;
@@ -165,6 +167,7 @@ pub async fn start_http_server(
     let app = Router::new()
         .route("/api/v1/health", get(handle_health))
         .route("/api/v1/metrics", get(handle_metrics))
+        .route("/api/v1/gc", post(handle_gc))
         .route(
             "/api/v1/projects",
             get(handle_list_projects).post(handle_add_project),
@@ -177,6 +180,10 @@ pub async fn start_http_server(
         .route("/api/v1/sessions/{id}", get(handle_get_session))
         .route("/api/v1/sessions/{id}/pause", post(handle_pause_session))
         .route("/api/v1/sessions/{id}/resume", post(handle_resume_session))
+        .route(
+            "/api/v1/sessions/{id}/hibernate",
+            post(handle_hibernate_session),
+        )
         .route("/api/v1/sessions/{id}/kill", post(handle_kill_session))
         .route("/api/v1/sessions/{id}/input", post(handle_input_session))
         .route("/api/v1/sessions/{id}/resize", post(handle_resize_session))
@@ -199,6 +206,20 @@ pub async fn start_http_server(
         .route(
             "/api/v1/approvals/{id}/decision",
             post(handle_decide_approval),
+        )
+        .route(
+            "/api/v1/pipelines",
+            get(handle_list_pipelines).post(handle_run_pipeline),
+        )
+        .route("/api/v1/pipelines/{id}", get(handle_get_pipeline))
+        .route(
+            "/api/v1/pipelines/{id}/cancel",
+            post(handle_cancel_pipeline),
+        )
+        .route("/api/v1/pipelines/{id}/arena", get(handle_pipeline_arena))
+        .route(
+            "/api/v1/pipelines/{id}/arena/select",
+            post(handle_pipeline_arena_select),
         )
         .route("/api/v1/ws", get(handle_events_ws))
         .route("/api/v1/sessions/{id}/pty", get(handle_pty_ws))
@@ -334,6 +355,9 @@ fn manager_err_to_response(err: ManagerError) -> Response {
             "profile_invalid",
             err.to_string(),
         ),
+        ManagerError::Dag(_) => {
+            api_error(StatusCode::BAD_REQUEST, "invalid_workflow", err.to_string())
+        }
         ManagerError::MaxSessionsReached(_) => api_error(
             StatusCode::TOO_MANY_REQUESTS,
             "max_sessions_reached",
@@ -845,6 +869,181 @@ async fn handle_decide_approval(
     }
 }
 
+#[derive(Deserialize)]
+struct ListPipelinesQuery {
+    project: Option<String>,
+}
+
+async fn handle_list_pipelines(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Query(q): Query<ListPipelinesQuery>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+        return resp;
+    }
+    match state
+        .manager
+        .list_pipelines(PipelineListParams { project: q.project })
+        .await
+    {
+        Ok(list) => Json(list).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+async fn handle_run_pipeline(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(body): Json<PipelineRunParams>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+        return resp;
+    }
+    match state.manager.run_pipeline(body).await {
+        Ok(run) => (StatusCode::CREATED, Json(run)).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+async fn handle_get_pipeline(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+        return resp;
+    }
+    match state.manager.get_pipeline(&id).await {
+        Ok(run) => Json(run).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+async fn handle_cancel_pipeline(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+        return resp;
+    }
+    match state.manager.cancel_pipeline(&id).await {
+        Ok(run) => Json(run).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+async fn handle_pipeline_arena(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+        return resp;
+    }
+    let run = match state.manager.get_pipeline(&id).await {
+        Ok(r) => r,
+        Err(err) => return manager_err_to_response(err),
+    };
+    let parsed: DagRuntimeState = match serde_json::from_str(&run.dag_state_json) {
+        Ok(st) => st,
+        Err(err) => {
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                format!("corrupt dag_state_json: {err}"),
+            );
+        }
+    };
+    let arena_steps: Vec<serde_json::Value> = parsed
+        .steps
+        .into_iter()
+        .filter(|(_, s)| !s.candidates.is_empty())
+        .map(|(step_id, s)| {
+            json!({
+                "step_id": step_id,
+                "status": s.status,
+                "winner": s.winner,
+                "candidates": s.candidates,
+            })
+        })
+        .collect();
+    Json(json!({
+        "pipeline_id": run.id,
+        "workflow_name": run.workflow_name,
+        "status": run.status,
+        "steps": arena_steps,
+    }))
+    .into_response()
+}
+
+#[derive(Deserialize)]
+struct ArenaSelectBody {
+    step_id: String,
+    session_id: String,
+}
+
+async fn handle_pipeline_arena_select(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<ArenaSelectBody>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+        return resp;
+    }
+    match state
+        .manager
+        .select_pipeline_arena_winner(PipelineArenaSelectParams {
+            pipeline_id: id,
+            step_id: body.step_id,
+            session_id: body.session_id,
+        })
+        .await
+    {
+        Ok(updated) => Json(updated).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+async fn handle_hibernate_session(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+        return resp;
+    }
+    match state.manager.hibernate_session(&id).await {
+        Ok(ses) => Json(ses).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+async fn handle_gc(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    body: Option<Json<GcParams>>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+        return resp;
+    }
+    let dry_run = body.is_some_and(|Json(p)| p.dry_run);
+    match state.manager.run_gc(dry_run).await {
+        Ok(report) => Json(report).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
 fn extract_ws_subprotocol_token(headers: &HeaderMap) -> Option<String> {
     let raw = headers
         .get(header::SEC_WEBSOCKET_PROTOCOL)
@@ -980,6 +1179,21 @@ async fn handle_events_ws(
                                 "seq": seq,
                                 "type": "approval.decided",
                                 "approval": approval
+                            });
+                            if socket.send(Message::Text(msg.to_string().into())).await.is_err() {
+                                break;
+                            }
+                        }
+                        Ok(DaemonEvent::PipelineUpdated {
+                            pipeline_id,
+                            status,
+                        }) => {
+                            let seq = state.event_seq.fetch_add(1, Ordering::Relaxed);
+                            let msg = json!({
+                                "seq": seq,
+                                "type": "pipeline.status",
+                                "pipeline_id": pipeline_id,
+                                "status": status.as_str()
                             });
                             if socket.send(Message::Text(msg.to_string().into())).await.is_err() {
                                 break;

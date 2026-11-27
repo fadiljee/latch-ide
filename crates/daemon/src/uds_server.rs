@@ -6,8 +6,9 @@ use std::sync::Arc;
 
 use base64::Engine;
 use latch_core::protocol::{
-    read_json_frame, read_raw_frame, write_json_frame, write_raw_frame, AttachFrame,
-    JsonRpcRequest, JsonRpcResponse, ProjectAddParams, SessionDiffParams, SessionIdParams,
+    read_json_frame, read_raw_frame, write_json_frame, write_raw_frame, AttachFrame, GcParams,
+    JsonRpcRequest, JsonRpcResponse, PipelineArenaSelectParams, PipelineIdParams,
+    PipelineListParams, PipelineRunParams, ProjectAddParams, SessionDiffParams, SessionIdParams,
     SessionListParams, SessionMergeParams, SessionResizeParams, SessionRunParams,
 };
 use latch_pty_pool::PtyFrame;
@@ -183,6 +184,13 @@ async fn dispatch_rpc(req: JsonRpcRequest, mgr: &SessionManager) -> JsonRpcRespo
             mgr.request_shutdown().await;
             Ok(serde_json::json!({ "stopping": true }))
         }
+        "daemon.gc" => match serde_json::from_value::<GcParams>(req.params) {
+            Ok(p) => mgr
+                .run_gc(p.dry_run)
+                .await
+                .map(|v| serde_json::to_value(v).unwrap_or(serde_json::Value::Null)),
+            Err(e) => Err(ManagerError::Config(e.to_string())),
+        },
         "project.add" => match serde_json::from_value::<ProjectAddParams>(req.params) {
             Ok(p) => mgr
                 .add_project(p)
@@ -232,6 +240,13 @@ async fn dispatch_rpc(req: JsonRpcRequest, mgr: &SessionManager) -> JsonRpcRespo
         "session.resume" => match serde_json::from_value::<SessionIdParams>(req.params) {
             Ok(p) => mgr
                 .resume_session(&p.session_id)
+                .await
+                .map(|v| serde_json::to_value(v).unwrap_or(serde_json::Value::Null)),
+            Err(e) => Err(ManagerError::Config(e.to_string())),
+        },
+        "session.hibernate" => match serde_json::from_value::<SessionIdParams>(req.params) {
+            Ok(p) => mgr
+                .hibernate_session(&p.session_id)
                 .await
                 .map(|v| serde_json::to_value(v).unwrap_or(serde_json::Value::Null)),
             Err(e) => Err(ManagerError::Config(e.to_string())),
@@ -295,6 +310,43 @@ async fn dispatch_rpc(req: JsonRpcRequest, mgr: &SessionManager) -> JsonRpcRespo
                 .map(|v| serde_json::to_value(v).unwrap_or(serde_json::Value::Null)),
             Err(e) => Err(ManagerError::Config(e.to_string())),
         },
+        "pipeline.run" => match serde_json::from_value::<PipelineRunParams>(req.params) {
+            Ok(p) => mgr
+                .run_pipeline(p)
+                .await
+                .map(|v| serde_json::to_value(v).unwrap_or(serde_json::Value::Null)),
+            Err(e) => Err(ManagerError::Config(e.to_string())),
+        },
+        "pipeline.list" => match serde_json::from_value::<PipelineListParams>(req.params) {
+            Ok(p) => mgr
+                .list_pipelines(p)
+                .await
+                .map(|v| serde_json::to_value(v).unwrap_or(serde_json::Value::Null)),
+            Err(e) => Err(ManagerError::Config(e.to_string())),
+        },
+        "pipeline.get" => match serde_json::from_value::<PipelineIdParams>(req.params) {
+            Ok(p) => mgr
+                .get_pipeline(&p.pipeline_id)
+                .await
+                .map(|v| serde_json::to_value(v).unwrap_or(serde_json::Value::Null)),
+            Err(e) => Err(ManagerError::Config(e.to_string())),
+        },
+        "pipeline.cancel" => match serde_json::from_value::<PipelineIdParams>(req.params) {
+            Ok(p) => mgr
+                .cancel_pipeline(&p.pipeline_id)
+                .await
+                .map(|v| serde_json::to_value(v).unwrap_or(serde_json::Value::Null)),
+            Err(e) => Err(ManagerError::Config(e.to_string())),
+        },
+        "pipeline.arena_select" => {
+            match serde_json::from_value::<PipelineArenaSelectParams>(req.params) {
+                Ok(p) => mgr
+                    .select_pipeline_arena_winner(p)
+                    .await
+                    .map(|v| serde_json::to_value(v).unwrap_or(serde_json::Value::Null)),
+                Err(e) => Err(ManagerError::Config(e.to_string())),
+            }
+        }
         other => return JsonRpcResponse::err(id, -32601, format!("unknown method '{other}'")),
     };
 
@@ -310,7 +362,7 @@ fn map_err_response(id: u64, err: ManagerError) -> JsonRpcResponse {
         ManagerError::Store(latch_store::StoreError::InvalidTransition { .. })
         | ManagerError::InvalidState { .. } => -32009,
         ManagerError::Git(latch_git_engine::GitError::MergeConflict(_)) => -32010,
-        ManagerError::Config(_) => -32602,
+        ManagerError::Config(_) | ManagerError::Dag(_) => -32602,
         _ => -32000,
     };
     JsonRpcResponse::err(id, code, err.to_string())

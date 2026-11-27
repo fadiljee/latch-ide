@@ -593,6 +593,40 @@ pub enum MergeStrategy {
     Merge,
 }
 
+/// Snapshot sesi saat hibernasi idle (`session_snapshots`, `T-410`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionSnapshot {
+    /// ID sesi terkait.
+    pub session_id: String,
+    /// Byte layar terminal (`ansi_bytes`) saat hibernasi.
+    pub screen_blob: Vec<u8>,
+    /// Commit HEAD worktree saat hibernasi (opsional).
+    pub worktree_head: Option<String>,
+    /// Ringkasan `git status` dalam JSON (opsional).
+    pub git_status_json: Option<String>,
+    /// Ringkasan konteks teks layar untuk resume prompt.
+    pub context_summary: Option<String>,
+    /// Waktu pembuatan snapshot (UTC epoch ms).
+    pub created_at: i64,
+}
+
+/// Laporan hasil pembersihan `latch gc` (`T-411`).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct GcReport {
+    /// Apakah hanya simulasi (`--dry-run`) tanpa menghapus data.
+    pub dry_run: bool,
+    /// Jumlah baris `proxy_telemetry` yang dihapus/akan dihapus.
+    pub telemetry_deleted: u64,
+    /// Jumlah baris `audit_log` yang dihapus/akan dihapus.
+    pub audit_deleted: u64,
+    /// Jumlah direktori `tmp/` sesi lama yang dihapus.
+    pub tmp_dirs_removed: u64,
+    /// Jumlah berkas log PTY yatim yang dihapus.
+    pub log_files_removed: u64,
+    /// Perkiraan byte disk yang dibebaskan.
+    pub bytes_freed: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;

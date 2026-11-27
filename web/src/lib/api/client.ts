@@ -1,4 +1,12 @@
-import type { ApprovalRequest, MergeCheckResult, Session, SessionDetail, SessionDiff } from "./types";
+import type {
+  ApprovalRequest,
+  MergeCheckResult,
+  PipelineArenaResponse,
+  PipelineRun,
+  Session,
+  SessionDetail,
+  SessionDiff,
+} from "./types";
 
 function authHeaders(token: string): HeadersInit {
   return {
@@ -83,6 +91,55 @@ export async function decideApproval(
     throw new Error(`HTTP ${resp.status}`);
   }
   return (await resp.json()) as ApprovalRequest;
+}
+
+export async function fetchPipelines(token: string): Promise<PipelineRun[]> {
+  const resp = await fetch("/api/v1/pipelines", { headers: authHeaders(token) });
+  if (!resp.ok) {
+    throw new Error(`HTTP ${resp.status}`);
+  }
+  return (await resp.json()) as PipelineRun[];
+}
+
+export async function fetchPipelineArena(
+  token: string,
+  id: string,
+): Promise<PipelineArenaResponse> {
+  const resp = await fetch(`/api/v1/pipelines/${encodeURIComponent(id)}/arena`, {
+    headers: authHeaders(token),
+  });
+  if (!resp.ok) {
+    throw new Error(`HTTP ${resp.status}`);
+  }
+  return (await resp.json()) as PipelineArenaResponse;
+}
+
+export async function selectPipelineArenaWinner(
+  token: string,
+  id: string,
+  stepId: string,
+  sessionId: string,
+): Promise<PipelineRun> {
+  const resp = await fetch(`/api/v1/pipelines/${encodeURIComponent(id)}/arena/select`, {
+    method: "POST",
+    headers: authHeaders(token),
+    body: JSON.stringify({ step_id: stepId, session_id: sessionId }),
+  });
+  if (!resp.ok) {
+    throw new Error(`HTTP ${resp.status}`);
+  }
+  return (await resp.json()) as PipelineRun;
+}
+
+export async function cancelPipeline(token: string, id: string): Promise<PipelineRun> {
+  const resp = await fetch(`/api/v1/pipelines/${encodeURIComponent(id)}/cancel`, {
+    method: "POST",
+    headers: authHeaders(token),
+  });
+  if (!resp.ok) {
+    throw new Error(`HTTP ${resp.status}`);
+  }
+  return (await resp.json()) as PipelineRun;
 }
 
 export function connectEventsSocket(

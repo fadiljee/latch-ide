@@ -15,8 +15,9 @@ use latch_core::config::{load_agents_config, load_latch_config, RuntimePaths};
 use latch_core::id::{ms_to_rfc3339, short_id};
 use latch_core::model::MergeStrategy;
 use latch_core::protocol::{
-    read_raw_frame, write_raw_frame, AttachFrame, ProjectAddParams, SessionDiffParams,
-    SessionListParams, SessionMergeParams, SessionRunParams, UdsClient,
+    read_raw_frame, write_raw_frame, AttachFrame, PipelineArenaSelectParams, PipelineListParams,
+    PipelineRunParams, ProjectAddParams, SessionDiffParams, SessionListParams, SessionMergeParams,
+    SessionRunParams, UdsClient,
 };
 
 #[derive(Parser)]
@@ -49,6 +50,11 @@ enum Commands {
         #[command(subcommand)]
         action: SessionCmd,
     },
+    /// Jalankan dan kelola pipeline DAG `workflow.toml`.
+    Pipeline {
+        #[command(subcommand)]
+        action: PipelineCmd,
+    },
     /// Validasi berkas `config.toml` dan `agents.toml`.
     Config {
         #[command(subcommand)]
@@ -69,6 +75,12 @@ enum Commands {
         /// Port loopback daemon di host remote (bawaan 7878).
         #[arg(long, default_value_t = 7878)]
         remote_port: u16,
+    },
+    /// Bersihkan telemetri/audit kedaluwarsa serta tmp & log PTY lama (`T-411`).
+    Gc {
+        /// Simulasikan tanpa menghapus data.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Buka antarmuka terminal interaktif (TUI).
     Tui,
@@ -139,8 +151,10 @@ enum SessionCmd {
     Attach { id: String },
     /// Jeda sesi (`SIGSTOP`).
     Pause { id: String },
-    /// Lanjutkan sesi (`SIGCONT`).
+    /// Lanjutkan sesi (`SIGCONT` / bangun dari hibernasi).
     Resume { id: String },
+    /// Hibernasi sesi aktif (simpan snapshot layar & lepas PTY untuk hemat RAM).
+    Hibernate { id: String },
     /// Hentikan paksa sesi.
     Kill { id: String },
     /// Tampilkan diff worktree sesi.
@@ -169,6 +183,36 @@ enum SessionCmd {
 enum ConfigCmd {
     /// Validasi sintaks dan aturan konfigurasi.
     Check,
+}
+
+#[derive(Subcommand)]
+enum PipelineCmd {
+    /// Jalankan pipeline DAG dari berkas `workflow.toml`.
+    Run {
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        workflow: String,
+        #[arg(long)]
+        task: String,
+    },
+    /// Tampilkan daftar eksekusi pipeline.
+    Ls {
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Tampilkan detail & status langkah satu pipeline.
+    Show { id: String },
+    /// Batalkan pipeline yang sedang berjalan.
+    Cancel { id: String },
+    /// Pilih pemenang arena pada langkah `fanout`.
+    Select {
+        id: String,
+        #[arg(long)]
+        step: String,
+        #[arg(long)]
+        winner: String,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -376,6 +420,19 @@ fn run_async_client(paths: RuntimePaths, cmd: Commands) -> anyhow::Result<()> {
                 );
             }
             Commands::Session { action } => handle_session_cmd(&client, action).await?,
+            Commands::Pipeline { action } => handle_pipeline_cmd(&client, action).await?,
+            Commands::Gc { dry_run } => {
+                let r = client.gc(dry_run).await?;
+                println!(
+                    "GC ({}): telemetry={} audit={} tmp_dirs={} logs={} bytes_freed={}",
+                    if r.dry_run { "dry-run" } else { "applied" },
+                    r.telemetry_deleted,
+                    r.audit_deleted,
+                    r.tmp_dirs_removed,
+                    r.log_files_removed,
+                    r.bytes_freed
+                );
+            }
             Commands::Tui => {
                 latch_tui::run_tui(paths.socket_path).await?;
             }
@@ -431,6 +488,14 @@ async fn handle_session_cmd(client: &UdsClient, action: SessionCmd) -> anyhow::R
             let s = client.session_resume(&id).await?;
             println!(
                 "Sesi {} dilanjutkan (status={}).",
+                short_id(&s.id),
+                s.status
+            );
+        }
+        SessionCmd::Hibernate { id } => {
+            let s = client.session_hibernate(&id).await?;
+            println!(
+                "Sesi {} dihibernasi (status={}).",
                 short_id(&s.id),
                 s.status
             );
@@ -493,6 +558,87 @@ async fn handle_session_cmd(client: &UdsClient, action: SessionCmd) -> anyhow::R
         SessionCmd::Discard { id } => {
             client.session_discard(&id).await?;
             println!("Sesi dibuang dan worktree dibersihkan.");
+        }
+    }
+    Ok(())
+}
+
+async fn handle_pipeline_cmd(client: &UdsClient, action: PipelineCmd) -> anyhow::Result<()> {
+    match action {
+        PipelineCmd::Run {
+            project,
+            workflow,
+            task,
+        } => {
+            let abs = std::fs::canonicalize(&workflow)
+                .unwrap_or_else(|_| Path::new(&workflow).to_path_buf());
+            let run = client
+                .pipeline_run(&PipelineRunParams {
+                    project,
+                    workflow_toml: None,
+                    workflow_path: Some(abs.to_string_lossy().to_string()),
+                    task,
+                })
+                .await?;
+            println!(
+                "Pipeline berjalan: id={} short={} workflow={} status={}",
+                run.id,
+                short_id(&run.id),
+                run.workflow_name,
+                run.status.as_str()
+            );
+        }
+        PipelineCmd::Ls { project } => {
+            let list = client
+                .pipeline_list(&PipelineListParams { project })
+                .await?;
+            for r in list {
+                println!(
+                    "{}\t{}\t{}\t${:.4}\t{}",
+                    short_id(&r.id),
+                    r.status.as_str(),
+                    r.workflow_name,
+                    r.total_cost_usd,
+                    r.id
+                );
+            }
+        }
+        PipelineCmd::Show { id } => {
+            let r = client.pipeline_get(&id).await?;
+            println!("ID       : {}", r.id);
+            println!("Workflow : {}", r.workflow_name);
+            println!("Status   : {}", r.status.as_str());
+            println!("Cost     : ${:.4}", r.total_cost_usd);
+            println!("Created  : {}", ms_to_rfc3339(r.created_at));
+            if let Some(updated) = r.updated_at {
+                println!("Updated  : {}", ms_to_rfc3339(updated));
+            }
+            if let Some(task) = r.task {
+                println!("Task     : {task}");
+            }
+            println!("State    : {}", r.dag_state_json);
+        }
+        PipelineCmd::Cancel { id } => {
+            let r = client.pipeline_cancel(&id).await?;
+            println!(
+                "Pipeline {} dibatalkan (status={}).",
+                short_id(&r.id),
+                r.status.as_str()
+            );
+        }
+        PipelineCmd::Select { id, step, winner } => {
+            let r = client
+                .pipeline_arena_select(&PipelineArenaSelectParams {
+                    pipeline_id: id,
+                    step_id: step,
+                    session_id: winner,
+                })
+                .await?;
+            println!(
+                "Pemenang arena pipeline {} diperbarui (status={}).",
+                short_id(&r.id),
+                r.status.as_str()
+            );
         }
     }
     Ok(())

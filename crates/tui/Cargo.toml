@@ -12,6 +12,7 @@ workspace = true
 crossterm = { workspace = true }
 latch-core = { workspace = true }
 ratatui = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 vt100 = { workspace = true }

@@ -7,7 +7,9 @@ use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
-use crate::model::{MergeCheckResult, MergeStrategy, Project, Session, SessionDiff};
+use crate::model::{
+    GcReport, MergeCheckResult, MergeStrategy, PipelineRun, Project, Session, SessionDiff,
+};
 
 /// Ukuran bingkai maksimal protokol UDS (16 MiB).
 pub const MAX_UDS_FRAME_BYTES: usize = 16 * 1024 * 1024;
@@ -200,6 +202,54 @@ pub struct SessionResizeParams {
     pub cols: u16,
     /// Baris terminal.
     pub rows: u16,
+}
+
+/// Parameter `pipeline.run` (`API.md` §4.5).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PipelineRunParams {
+    /// Nama atau ID proyek.
+    pub project: String,
+    /// Isi mentah `workflow.toml` (opsional bila `workflow_path` diberikan).
+    #[serde(default)]
+    pub workflow_toml: Option<String>,
+    /// Path berkas `workflow.toml` (opsional bila `workflow_toml` diberikan).
+    #[serde(default)]
+    pub workflow_path: Option<String>,
+    /// Deskripsi tugas pipeline.
+    pub task: String,
+}
+
+/// Parameter `pipeline.list`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PipelineListParams {
+    /// Filter nama/ID proyek opsional.
+    pub project: Option<String>,
+}
+
+/// Parameter berbasis ID pipeline (`pipeline.get`, `pipeline.cancel`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PipelineIdParams {
+    /// ID pipeline (atau awalan unik).
+    pub pipeline_id: String,
+}
+
+/// Parameter `pipeline.arena_select` (`API.md` §4.5).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PipelineArenaSelectParams {
+    /// ID pipeline.
+    pub pipeline_id: String,
+    /// ID langkah `fanout`.
+    pub step_id: String,
+    /// ID sesi atau nama profil pemenang yang dipilih.
+    pub session_id: String,
+}
+
+/// Parameter `daemon.gc` (`T-411`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GcParams {
+    /// Bila `true`, hanya menghitung kandidat tanpa menghapus data.
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 /// Snapshot layar virtual `vt100` dari sesi.
@@ -577,6 +627,68 @@ impl UdsClient {
             },
         )
         .await
+    }
+
+    /// Memulai eksekusi pipeline DAG baru.
+    pub async fn pipeline_run(
+        &self,
+        params: &PipelineRunParams,
+    ) -> Result<PipelineRun, ProtocolError> {
+        self.call("pipeline.run", params).await
+    }
+
+    /// Mengambil daftar pipeline.
+    pub async fn pipeline_list(
+        &self,
+        params: &PipelineListParams,
+    ) -> Result<Vec<PipelineRun>, ProtocolError> {
+        self.call("pipeline.list", params).await
+    }
+
+    /// Mengambil detail satu pipeline.
+    pub async fn pipeline_get(&self, pipeline_id: &str) -> Result<PipelineRun, ProtocolError> {
+        self.call(
+            "pipeline.get",
+            &PipelineIdParams {
+                pipeline_id: pipeline_id.to_string(),
+            },
+        )
+        .await
+    }
+
+    /// Membatalkan pipeline yang sedang berjalan.
+    pub async fn pipeline_cancel(&self, pipeline_id: &str) -> Result<PipelineRun, ProtocolError> {
+        self.call(
+            "pipeline.cancel",
+            &PipelineIdParams {
+                pipeline_id: pipeline_id.to_string(),
+            },
+        )
+        .await
+    }
+
+    /// Memilih pemenang arena pada langkah `fanout` secara manual.
+    pub async fn pipeline_arena_select(
+        &self,
+        params: &PipelineArenaSelectParams,
+    ) -> Result<PipelineRun, ProtocolError> {
+        self.call("pipeline.arena_select", params).await
+    }
+
+    /// Menghibernasi sesi aktif (`T-410`).
+    pub async fn session_hibernate(&self, session_id: &str) -> Result<Session, ProtocolError> {
+        self.call(
+            "session.hibernate",
+            &SessionIdParams {
+                session_id: session_id.to_string(),
+            },
+        )
+        .await
+    }
+
+    /// Menjalankan pembersihan retensi & sampah disk (`latch gc`, `T-411`).
+    pub async fn gc(&self, dry_run: bool) -> Result<GcReport, ProtocolError> {
+        self.call("daemon.gc", &GcParams { dry_run }).await
     }
 }
 

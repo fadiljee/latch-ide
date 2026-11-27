@@ -9,16 +9,18 @@ use std::time::Duration;
 use latch_core::config::{AgentsConfig, LatchConfig, RuntimePaths};
 use latch_core::id::{new_id, now_ms, short_id};
 use latch_core::model::{
-    ApprovalActionType, ApprovalDecision, ApprovalRequest, AuditEntry, MergeCheckResult,
-    MergeStrategy, Project, ProxyMode, Session, SessionDiff, SessionStatus,
-    SessionTelemetrySummary, TelemetryRecord, TripReason,
+    ApprovalActionType, ApprovalDecision, ApprovalRequest, AuditEntry, GcReport, MergeCheckResult,
+    MergeStrategy, PipelineRun, PipelineStatus, Project, ProxyMode, Session, SessionDiff,
+    SessionSnapshot, SessionStatus, SessionTelemetrySummary, TelemetryRecord, TripReason,
 };
 use latch_core::pricing::{load_pricing_table, PricingTable};
 use latch_core::protocol::{
-    DaemonHealth, ProjectAddParams, ScreenSnapshot, SessionDiffParams, SessionListParams,
-    SessionMergeParams, SessionRunParams,
+    DaemonHealth, PipelineArenaSelectParams, PipelineListParams, PipelineRunParams,
+    ProjectAddParams, ScreenSnapshot, SessionDiffParams, SessionListParams, SessionMergeParams,
+    SessionRunParams,
 };
 use latch_core::sandbox::SandboxProvider;
+use latch_dag::{execute_workflow, parse_and_validate_workflow, DagError, DagRuntimeState};
 use latch_git_engine::{
     create_worktree, inspect_repo, list_worktrees, merge_check, merge_session, remove_worktree,
     worktree_diff, GitError,
@@ -58,6 +60,9 @@ pub enum ManagerError {
     /// Galat reverse proxy LLM lokal.
     #[error(transparent)]
     Proxy(#[from] ProxyError),
+    /// Galat parser/eksekutor pipeline DAG.
+    #[error(transparent)]
+    Dag(#[from] DagError),
     /// Galat validasi konfigurasi/profil.
     #[error("configuration error: {0}")]
     Config(String),
@@ -91,6 +96,11 @@ pub enum DaemonEvent {
     ApprovalRequested { approval: ApprovalRequest },
     /// Permintaan approval telah diputuskan.
     ApprovalDecided { approval: ApprovalRequest },
+    /// Status pipeline DAG diperbarui.
+    PipelineUpdated {
+        pipeline_id: String,
+        status: PipelineStatus,
+    },
 }
 
 /// Koordinator state sesi daemon (`store` + `git-engine` + `pty-pool` + `sandbox` + `proxy`).
@@ -105,6 +115,7 @@ pub struct SessionManager {
     proxy_registry: ProxyRegistry,
     proxy_handle: Arc<ProxyServerHandle>,
     approval_waiters: Arc<AsyncMutex<HashMap<String, oneshot::Sender<ApprovalRequest>>>>,
+    pipeline_tasks: Arc<AsyncMutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
     exit_tx: mpsc::Sender<PtyExitEvent>,
     trip_tx: mpsc::Sender<TripEvent>,
     events_tx: broadcast::Sender<DaemonEvent>,
@@ -155,6 +166,7 @@ impl SessionManager {
             proxy_registry,
             proxy_handle: Arc::new(proxy_handle),
             approval_waiters: Arc::new(AsyncMutex::new(HashMap::new())),
+            pipeline_tasks: Arc::new(AsyncMutex::new(HashMap::new())),
             exit_tx,
             trip_tx,
             events_tx,
@@ -165,6 +177,7 @@ impl SessionManager {
         manager.spawn_exit_watcher(exit_rx);
         manager.spawn_telemetry_batch_writer(telemetry_rx);
         manager.spawn_trip_watcher(trip_rx);
+        manager.spawn_idle_hibernate_watcher();
         Ok(manager)
     }
 
@@ -525,6 +538,55 @@ impl SessionManager {
             }
         }
 
+        // Pemulihan pipeline yang terputus akibat restart daemon (T-408)
+        let pipelines = self.store.list_pipeline_runs(None).await?;
+        for run in pipelines {
+            if matches!(
+                run.status,
+                PipelineStatus::Pending | PipelineStatus::Running
+            ) {
+                warn!(
+                    pipeline_id = %run.id,
+                    workflow = %run.workflow_name,
+                    "reconciling interrupted pipeline run to failed after daemon restart"
+                );
+                let mut state: DagRuntimeState = serde_json::from_str(&run.dag_state_json)
+                    .unwrap_or_else(|_| DagRuntimeState {
+                        workflow_name: run.workflow_name.clone(),
+                        status: PipelineStatus::Failed,
+                        total_cost_usd: run.total_cost_usd,
+                        reason: None,
+                        steps: HashMap::new(),
+                    });
+                state.status = PipelineStatus::Failed;
+                state.reason = Some("daemon restarted while pipeline was running".to_string());
+                let serialized =
+                    serde_json::to_string(&state).unwrap_or_else(|_| run.dag_state_json.clone());
+                let _ = self
+                    .store
+                    .update_pipeline_run(
+                        &run.id,
+                        PipelineStatus::Failed,
+                        serialized,
+                        state.total_cost_usd,
+                    )
+                    .await;
+                let _ = self
+                    .store
+                    .insert_audit(AuditEntry {
+                        id: None,
+                        session_id: None,
+                        kind: "reconcile_pipeline".to_string(),
+                        detail: format!(
+                            "marked interrupted pipeline {} ({}) as failed on startup",
+                            run.id, run.workflow_name
+                        ),
+                        timestamp: now_ms(),
+                    })
+                    .await;
+            }
+        }
+
         Ok(())
     }
 
@@ -541,7 +603,8 @@ impl SessionManager {
                     SessionStatus::Failed
                 };
                 if let Ok(existing) = store.get_session(&ev.session_id).await {
-                    if existing.status.is_terminal() {
+                    if existing.status.is_terminal() || existing.status == SessionStatus::Hibernated
+                    {
                         continue;
                     }
                     let final_status = if existing.status == SessionStatus::Paused
@@ -640,6 +703,37 @@ impl SessionManager {
         });
     }
 
+    fn spawn_idle_hibernate_watcher(&self) {
+        let mins = self.config.circuit_breaker.idle_hibernate_minutes;
+        if mins == 0 {
+            return;
+        }
+        let idle_ms = i64::try_from(mins.saturating_mul(60_000)).unwrap_or(900_000);
+        let manager = self.clone();
+        let shutdown = Arc::clone(&self.shutdown);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(30));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    _ = shutdown.notified() => break,
+                    _ = interval.tick() => {
+                        let idle_ids = manager.pty_pool.idle_sessions(idle_ms).await;
+                        for sid in idle_ids {
+                            if let Ok(ses) = manager.store.get_session(&sid).await {
+                                if ses.status == SessionStatus::Running {
+                                    if let Err(err) = manager.hibernate_session(&sid).await {
+                                        warn!(session_id = %sid, error = %err, "idle hibernation failed");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     /// Mendaftarkan repositori Git baru.
     pub async fn add_project(&self, params: ProjectAddParams) -> Result<Project, ManagerError> {
         let repo_info = inspect_repo(Path::new(&params.repo_path)).await?;
@@ -671,6 +765,16 @@ impl SessionManager {
 
     /// Menjalankan satu sesi agen pada worktree + branch baru.
     pub async fn run_session(&self, params: SessionRunParams) -> Result<Session, ManagerError> {
+        self.run_session_with_pipeline(params, None, None).await
+    }
+
+    /// Menjalankan satu sesi agen yang opsional terikat ke `pipeline_run_id` dan `step_id`.
+    pub async fn run_session_with_pipeline(
+        &self,
+        params: SessionRunParams,
+        pipeline_run_id: Option<String>,
+        step_id: Option<String>,
+    ) -> Result<Session, ManagerError> {
         let active_count = self.pty_pool.active_count().await;
         if active_count >= self.config.limits.max_sessions {
             return Err(ManagerError::MaxSessionsReached(
@@ -785,8 +889,8 @@ impl SessionManager {
             started_at: now_ms(),
             ended_at: None,
             task: Some(params.task),
-            pipeline_run_id: None,
-            step_id: None,
+            pipeline_run_id,
+            step_id,
             exit_code: None,
             trip_reason: None,
             proxy_mode: profile.proxy_mode,
@@ -881,28 +985,197 @@ impl SessionManager {
         Ok(updated)
     }
 
-    /// Melanjutkan sesi yang dijeda (`SIGCONT`).
-    pub async fn resume_session(&self, session_id: &str) -> Result<Session, ManagerError> {
+    /// Menghibernasi sesi aktif: simpan snapshot layar ke SQLite, lepas proses PTY untuk hemat RAM (`T-410`).
+    pub async fn hibernate_session(&self, session_id: &str) -> Result<Session, ManagerError> {
         let ses = self.store.get_session(session_id).await?;
-        if ses.status != SessionStatus::Paused {
+        if ses.status != SessionStatus::Running {
             return Err(ManagerError::InvalidState {
                 id: ses.id,
                 status: ses.status,
-                action: "resume",
+                action: "hibernate",
             });
         }
-        let handle = self.pty_pool.get(&ses.id).await?;
-        handle.resume()?;
+        let snap = if let Ok(handle) = self.pty_pool.get(&ses.id).await {
+            let s = handle.snapshot();
+            SessionSnapshot {
+                session_id: ses.id.clone(),
+                screen_blob: s.ansi_bytes,
+                worktree_head: None,
+                git_status_json: None,
+                context_summary: Some(s.text),
+                created_at: now_ms(),
+            }
+        } else {
+            SessionSnapshot {
+                session_id: ses.id.clone(),
+                screen_blob: Vec::new(),
+                worktree_head: None,
+                git_status_json: None,
+                context_summary: None,
+                created_at: now_ms(),
+            }
+        };
+        self.store.save_session_snapshot(snap).await?;
+
+        // Transisikan ke Hibernated sebelum membunuh PTY agar exit watcher tidak menimpanya menjadi Failed.
         let updated = self
             .store
-            .transition_session(&ses.id, SessionStatus::Running, None, None, None, false)
+            .transition_session(&ses.id, SessionStatus::Hibernated, None, None, None, true)
             .await?;
+        self.proxy_registry.revoke_session(&ses.id).await;
+        if let Ok(handle) = self.pty_pool.get(&ses.id).await {
+            let _ = handle.kill().await;
+        }
+        let _ = self
+            .store
+            .insert_audit(AuditEntry {
+                id: None,
+                session_id: Some(updated.id.clone()),
+                kind: "hibernate".to_string(),
+                detail: "hibernated idle session and saved terminal snapshot".to_string(),
+                timestamp: now_ms(),
+            })
+            .await;
         let _ = self.events_tx.send(DaemonEvent::SessionStatusChanged {
             session_id: updated.id.clone(),
             from: ses.status,
             to: updated.status,
         });
         Ok(updated)
+    }
+
+    /// Melanjutkan sesi yang dijeda (`SIGCONT`) atau membangunkan sesi yang dihibernasi (`T-410`).
+    pub async fn resume_session(&self, session_id: &str) -> Result<Session, ManagerError> {
+        let ses = self.store.get_session(session_id).await?;
+        match ses.status {
+            SessionStatus::Paused => {
+                let handle = self.pty_pool.get(&ses.id).await?;
+                handle.resume()?;
+                let updated = self
+                    .store
+                    .transition_session(&ses.id, SessionStatus::Running, None, None, None, false)
+                    .await?;
+                let _ = self.events_tx.send(DaemonEvent::SessionStatusChanged {
+                    session_id: updated.id.clone(),
+                    from: ses.status,
+                    to: updated.status,
+                });
+                Ok(updated)
+            }
+            SessionStatus::Hibernated => {
+                let mut profile = {
+                    let guard = self.agents.read().await;
+                    guard
+                        .profiles
+                        .get(&ses.agent_profile)
+                        .cloned()
+                        .ok_or_else(|| {
+                            ManagerError::Config(format!(
+                                "unknown agent profile '{}'",
+                                ses.agent_profile
+                            ))
+                        })?
+                };
+                if !profile.resume_args.is_empty() {
+                    profile.args = profile.resume_args.clone();
+                }
+
+                let worktree_path = PathBuf::from(&ses.worktree_path);
+                let isolated_tmp = self.paths.tmp_dir().join(&ses.id);
+                let log_path = self.paths.logs_dir().join(format!("pty-{}.log", ses.id));
+                let sandbox_policy = build_session_policy(
+                    &worktree_path,
+                    &isolated_tmp,
+                    &self.config.sandbox,
+                    &profile,
+                );
+
+                let mut extra_env = match profile.proxy_mode {
+                    ProxyMode::Injected => {
+                        let provider = profile
+                            .proxy_provider
+                            .as_deref()
+                            .unwrap_or("openai")
+                            .to_string();
+                        let limits = SessionLimits {
+                            max_consecutive_errors: self
+                                .config
+                                .circuit_breaker
+                                .max_consecutive_errors,
+                            max_session_budget_usd: self
+                                .config
+                                .circuit_breaker
+                                .max_session_budget_usd,
+                        };
+                        let token = self
+                            .proxy_registry
+                            .register_session(ses.id.clone(), provider.clone(), limits)
+                            .await;
+                        proxy_env_vars(&self.proxy_handle.base_url(), &token, &provider)
+                    }
+                    ProxyMode::Bypass => Vec::new(),
+                };
+                if let Ok(Some(snap)) = self.store.get_session_snapshot(&ses.id).await {
+                    if let Some(ctx) = snap.context_summary {
+                        extra_env.push(("LATCH_RESUME_CONTEXT".to_string(), ctx));
+                    }
+                }
+
+                let pty_handle = self
+                    .pty_pool
+                    .spawn(
+                        PtySpawnRequest {
+                            session_id: ses.id.clone(),
+                            workdir: worktree_path,
+                            isolated_tmp,
+                            log_path,
+                            profile,
+                            extra_env,
+                            task: ses.task.clone().unwrap_or_default(),
+                            sandbox_policy,
+                            ring_buffer_bytes: self.config.limits.pty_ring_buffer_kib * 1024,
+                            log_max_bytes: (self.config.limits.pty_log_max_mib as u64)
+                                * 1024
+                                * 1024,
+                            batch_ms: self.config.limits.pty_batch_ms,
+                            scrollback_lines: self.config.limits.pty_scrollback_lines,
+                            size: (100, 30),
+                        },
+                        self.sandbox.as_ref(),
+                        self.exit_tx.clone(),
+                    )
+                    .await?;
+
+                self.store
+                    .set_session_pid(&ses.id, pty_handle.pid().map(i64::from))
+                    .await?;
+                let updated = self
+                    .store
+                    .transition_session(&ses.id, SessionStatus::Running, None, None, None, false)
+                    .await?;
+                let _ = self
+                    .store
+                    .insert_audit(AuditEntry {
+                        id: None,
+                        session_id: Some(updated.id.clone()),
+                        kind: "resume_hibernated".to_string(),
+                        detail: "resumed hibernated session with saved context".to_string(),
+                        timestamp: now_ms(),
+                    })
+                    .await;
+                let _ = self.events_tx.send(DaemonEvent::SessionStatusChanged {
+                    session_id: updated.id.clone(),
+                    from: ses.status,
+                    to: updated.status,
+                });
+                Ok(updated)
+            }
+            other => Err(ManagerError::InvalidState {
+                id: ses.id,
+                status: other,
+                action: "resume",
+            }),
+        }
     }
 
     /// Menghentikan proses PTY sesi dan menandai sesi `failed` bila masih aktif.
@@ -1086,4 +1359,324 @@ impl SessionManager {
             .await;
         Ok(())
     }
+
+    /// Menjalankan pipeline DAG `workflow.toml` secara asinkron dan menyimpan state ke SQLite (T-402..T-408).
+    pub async fn run_pipeline(
+        &self,
+        params: PipelineRunParams,
+    ) -> Result<PipelineRun, ManagerError> {
+        const MAX_WORKFLOW_BYTES: usize = 256 * 1024;
+        let toml_src = match (params.workflow_toml, params.workflow_path) {
+            (Some(raw), _) if !raw.trim().is_empty() => raw,
+            (_, Some(path)) if !path.trim().is_empty() => {
+                tokio::fs::read_to_string(&path).await.map_err(|e| {
+                    ManagerError::Config(format!("failed reading workflow_path '{path}': {e}"))
+                })?
+            }
+            _ => {
+                return Err(ManagerError::Config(
+                    "either 'workflow_toml' or 'workflow_path' must be provided".to_string(),
+                ));
+            }
+        };
+        if toml_src.len() > MAX_WORKFLOW_BYTES {
+            return Err(ManagerError::Config(format!(
+                "workflow.toml size {} exceeds 256 KiB limit",
+                toml_src.len()
+            )));
+        }
+
+        let (spec, _order) = parse_and_validate_workflow(&toml_src)?;
+        let project = self.store.get_project(&params.project).await?;
+        let pipeline_id = new_id();
+        let initial_state = DagRuntimeState {
+            workflow_name: spec.workflow.name.clone(),
+            status: PipelineStatus::Running,
+            total_cost_usd: 0.0,
+            reason: None,
+            steps: HashMap::new(),
+        };
+        let initial_json =
+            serde_json::to_string(&initial_state).unwrap_or_else(|_| "{}".to_string());
+        let now = now_ms();
+        let run = PipelineRun {
+            id: pipeline_id.clone(),
+            project_id: project.id.clone(),
+            workflow_name: spec.workflow.name.clone(),
+            dag_state_json: initial_json,
+            status: PipelineStatus::Running,
+            created_at: now,
+            updated_at: Some(now),
+            task: Some(params.task.clone()),
+            total_cost_usd: 0.0,
+        };
+        let saved = self.store.insert_pipeline_run(run).await?;
+        let _ = self.events_tx.send(DaemonEvent::PipelineUpdated {
+            pipeline_id: saved.id.clone(),
+            status: saved.status,
+        });
+
+        let mgr = self.clone();
+        let run_id = saved.id.clone();
+        let task_text = params.task;
+        let base_ref = spec.workflow.base_ref.clone();
+        let handle = tokio::spawn(async move {
+            let runner = crate::pipeline_runner::DaemonStepRunner::new(
+                mgr.clone(),
+                project.clone(),
+                run_id.clone(),
+                base_ref,
+            );
+            let final_state = match execute_workflow(
+                &spec,
+                &task_text,
+                &project.name,
+                &project.default_branch,
+                &runner,
+            )
+            .await
+            {
+                Ok(st) => st,
+                Err(err) => DagRuntimeState {
+                    workflow_name: spec.workflow.name.clone(),
+                    status: PipelineStatus::Failed,
+                    total_cost_usd: 0.0,
+                    reason: Some(err.to_string()),
+                    steps: HashMap::new(),
+                },
+            };
+
+            let state_json =
+                serde_json::to_string(&final_state).unwrap_or_else(|_| "{}".to_string());
+            let _ = mgr
+                .store
+                .update_pipeline_run(
+                    &run_id,
+                    final_state.status,
+                    state_json,
+                    final_state.total_cost_usd,
+                )
+                .await;
+            mgr.pipeline_tasks.lock().await.remove(&run_id);
+            let _ = mgr.events_tx.send(DaemonEvent::PipelineUpdated {
+                pipeline_id: run_id,
+                status: final_state.status,
+            });
+        });
+
+        self.pipeline_tasks
+            .lock()
+            .await
+            .insert(saved.id.clone(), handle);
+
+        Ok(saved)
+    }
+
+    /// Mengambil daftar pipeline dengan filter proyek opsional.
+    pub async fn list_pipelines(
+        &self,
+        params: PipelineListParams,
+    ) -> Result<Vec<PipelineRun>, ManagerError> {
+        let project_id = match params.project {
+            Some(ref key) => Some(self.store.get_project(key).await?.id),
+            None => None,
+        };
+        Ok(self.store.list_pipeline_runs(project_id).await?)
+    }
+
+    /// Mengambil detail satu pipeline berdasarkan ID atau awalan unik.
+    pub async fn get_pipeline(&self, pipeline_id: &str) -> Result<PipelineRun, ManagerError> {
+        Ok(self.store.get_pipeline_run(pipeline_id).await?)
+    }
+
+    /// Membatalkan pipeline yang sedang berjalan beserta sesi turunannya.
+    pub async fn cancel_pipeline(&self, pipeline_id: &str) -> Result<PipelineRun, ManagerError> {
+        let run = self.store.get_pipeline_run(pipeline_id).await?;
+        if let Some(handle) = self.pipeline_tasks.lock().await.remove(&run.id) {
+            handle.abort();
+        }
+        // Hentikan seluruh sesi aktif yang terikat pada pipeline ini.
+        if let Ok(sessions) = self
+            .store
+            .list_sessions(Some(run.project_id.clone()), None)
+            .await
+        {
+            for ses in sessions {
+                if ses.pipeline_run_id.as_deref() == Some(run.id.as_str()) && ses.status.is_active()
+                {
+                    let _ = self.kill_session(&ses.id).await;
+                }
+            }
+        }
+        let mut state: DagRuntimeState =
+            serde_json::from_str(&run.dag_state_json).unwrap_or_else(|_| DagRuntimeState {
+                workflow_name: run.workflow_name.clone(),
+                status: PipelineStatus::Cancelled,
+                total_cost_usd: run.total_cost_usd,
+                reason: None,
+                steps: HashMap::new(),
+            });
+        state.status = PipelineStatus::Cancelled;
+        state.reason = Some("cancelled by user".to_string());
+        let state_json = serde_json::to_string(&state).unwrap_or(run.dag_state_json);
+        let updated = self
+            .store
+            .update_pipeline_run(
+                &run.id,
+                PipelineStatus::Cancelled,
+                state_json,
+                state.total_cost_usd,
+            )
+            .await?;
+        let _ = self.events_tx.send(DaemonEvent::PipelineUpdated {
+            pipeline_id: updated.id.clone(),
+            status: updated.status,
+        });
+        Ok(updated)
+    }
+
+    /// Memilih pemenang arena pada langkah `fanout` secara manual (`API.md` §4.5, `T-406`).
+    pub async fn select_pipeline_arena_winner(
+        &self,
+        params: PipelineArenaSelectParams,
+    ) -> Result<PipelineRun, ManagerError> {
+        let run = self.store.get_pipeline_run(&params.pipeline_id).await?;
+        let mut state: DagRuntimeState = serde_json::from_str(&run.dag_state_json)
+            .map_err(|e| ManagerError::Config(format!("invalid dag_state_json: {e}")))?;
+        let step = state.steps.get_mut(&params.step_id).ok_or_else(|| {
+            ManagerError::Config(format!(
+                "step '{}' not found in pipeline '{}'",
+                params.step_id, run.id
+            ))
+        })?;
+        let matched = step
+            .candidates
+            .iter()
+            .find(|c| {
+                c.session_id.as_deref() == Some(params.session_id.as_str())
+                    || c.profile == params.session_id
+            })
+            .cloned()
+            .ok_or_else(|| {
+                ManagerError::Config(format!(
+                    "candidate '{}' not found in step '{}'",
+                    params.session_id, params.step_id
+                ))
+            })?;
+        step.winner = Some(matched.profile);
+        let state_json = serde_json::to_string(&state)
+            .map_err(|e| ManagerError::Config(format!("failed serializing dag_state_json: {e}")))?;
+        let updated = self
+            .store
+            .update_pipeline_run(&run.id, run.status, state_json, run.total_cost_usd)
+            .await?;
+        Ok(updated)
+    }
+
+    /// Menjalankan pembersihan kebijakan retensi SQLite serta direktori `tmp/` dan log PTY lama (`T-411`).
+    pub async fn run_gc(&self, dry_run: bool) -> Result<GcReport, ManagerError> {
+        const DAY_MS: i64 = 86_400_000;
+        let now = now_ms();
+        let telemetry_cutoff =
+            now.saturating_sub(i64::from(self.config.retention.telemetry_days) * DAY_MS);
+        let audit_cutoff = now.saturating_sub(i64::from(self.config.retention.audit_days) * DAY_MS);
+
+        let (telemetry_deleted, audit_deleted) = self
+            .store
+            .prune_retention(telemetry_cutoff, audit_cutoff, dry_run)
+            .await?;
+
+        let active_ids: HashSet<String> = self
+            .store
+            .list_sessions(None, None)
+            .await?
+            .into_iter()
+            .filter(|s| s.status.is_active())
+            .map(|s| s.id)
+            .collect();
+
+        let mut tmp_dirs_removed = 0u64;
+        let mut log_files_removed = 0u64;
+        let mut bytes_freed = 0u64;
+
+        let tmp_root = self.paths.tmp_dir();
+        if tmp_root.exists() {
+            if let Ok(mut entries) = tokio::fs::read_dir(&tmp_root).await {
+                while let Ok(Some(entry)) = entries.next_entry().await {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if !active_ids.contains(&name) {
+                        let path = entry.path();
+                        bytes_freed = bytes_freed.saturating_add(dir_size_bytes(&path));
+                        tmp_dirs_removed += 1;
+                        if !dry_run {
+                            let _ = tokio::fs::remove_dir_all(&path).await;
+                        }
+                    }
+                }
+            }
+        }
+
+        let logs_root = self.paths.logs_dir();
+        if logs_root.exists() {
+            if let Ok(mut entries) = tokio::fs::read_dir(&logs_root).await {
+                while let Ok(Some(entry)) = entries.next_entry().await {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if let Some(rest) = name.strip_prefix("pty-") {
+                        let sid = rest.split('.').next().unwrap_or("");
+                        if !sid.is_empty() && !active_ids.contains(sid) {
+                            let path = entry.path();
+                            if let Ok(meta) = entry.metadata().await {
+                                bytes_freed = bytes_freed.saturating_add(meta.len());
+                            }
+                            log_files_removed += 1;
+                            if !dry_run {
+                                let _ = tokio::fs::remove_file(&path).await;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if !dry_run {
+            let _ = self
+                .store
+                .insert_audit(AuditEntry {
+                    id: None,
+                    session_id: None,
+                    kind: "gc".to_string(),
+                    detail: format!(
+                        "gc pruned telemetry={telemetry_deleted} audit={audit_deleted} tmp_dirs={tmp_dirs_removed} logs={log_files_removed} bytes={bytes_freed}"
+                    ),
+                    timestamp: now_ms(),
+                })
+                .await;
+        }
+
+        Ok(GcReport {
+            dry_run,
+            telemetry_deleted,
+            audit_deleted,
+            tmp_dirs_removed,
+            log_files_removed,
+            bytes_freed,
+        })
+    }
+}
+
+fn dir_size_bytes(path: &Path) -> u64 {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return 0;
+    };
+    if meta.is_file() {
+        return meta.len();
+    }
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return 0;
+    };
+    let mut total = 0u64;
+    for entry in entries.flatten() {
+        total = total.saturating_add(dir_size_bytes(&entry.path()));
+    }
+    total
 }

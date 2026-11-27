@@ -142,7 +142,8 @@ pub fn spawn_notification_dispatcher(
                 }
                 Ok(DaemonEvent::SessionCreated { .. })
                 | Ok(DaemonEvent::ApprovalRequested { .. })
-                | Ok(DaemonEvent::ApprovalDecided { .. }) => {}
+                | Ok(DaemonEvent::ApprovalDecided { .. })
+                | Ok(DaemonEvent::PipelineUpdated { .. }) => {}
                 Err(broadcast::error::RecvError::Lagged(skipped)) => {
                     debug!(skipped, "notification dispatcher lagged");
                 }

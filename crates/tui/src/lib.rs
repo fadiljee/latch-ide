@@ -11,10 +11,12 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use latch_core::id::short_id;
-use latch_core::model::{MergeStrategy, Session, SessionDiff, SessionStatus};
+use latch_core::model::{
+    MergeStrategy, PipelineRun, PipelineStatus, Session, SessionDiff, SessionStatus,
+};
 use latch_core::protocol::{
-    read_raw_frame, write_raw_frame, AttachFrame, SessionDiffParams, SessionListParams,
-    SessionMergeParams, UdsClient,
+    read_raw_frame, write_raw_frame, AttachFrame, PipelineListParams, SessionDiffParams,
+    SessionListParams, SessionMergeParams, UdsClient,
 };
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -45,6 +47,8 @@ pub enum UiMode {
     Attach { session_id: String },
     /// Menampilkan diff worktree sesi terpilih.
     Diff { session_id: String },
+    /// Menampilkan daftar pipeline DAG dan matriks perbandingan Fan-Out Arena (T-409).
+    Pipelines,
     /// Dialog konfirmasi aksi destruktif/final.
     Confirm {
         action: ConfirmAction,
@@ -71,6 +75,10 @@ pub struct TuiApp {
     pub sessions: Vec<Session>,
     /// Indeks sesi terpilih.
     pub selected: usize,
+    /// Daftar pipeline terbaru dari daemon (`T-409`).
+    pub pipelines: Vec<PipelineRun>,
+    /// Indeks pipeline terpilih.
+    pub selected_pipeline: usize,
     /// Mode UI aktif.
     pub mode: UiMode,
     /// Diff sesi yang terakhir dimuat.
@@ -97,6 +105,8 @@ impl TuiApp {
         Self {
             sessions: Vec::new(),
             selected: 0,
+            pipelines: Vec::new(),
+            selected_pipeline: 0,
             mode: UiMode::Browse,
             current_diff: None,
             vt: vt100::Parser::new(24, 80, 500),
@@ -136,6 +146,21 @@ impl TuiApp {
             self.selected = 0;
         } else if self.selected >= self.sessions.len() {
             self.selected = self.sessions.len() - 1;
+        }
+    }
+
+    /// Mengambil pipeline yang sedang dipilih.
+    pub fn selected_pipeline(&self) -> Option<&PipelineRun> {
+        self.pipelines.get(self.selected_pipeline)
+    }
+
+    /// Memperbarui daftar pipeline dengan menjaga indeks seleksi tetap valid.
+    pub fn set_pipelines(&mut self, pipelines: Vec<PipelineRun>) {
+        self.pipelines = pipelines;
+        if self.pipelines.is_empty() {
+            self.selected_pipeline = 0;
+        } else if self.selected_pipeline >= self.pipelines.len() {
+            self.selected_pipeline = self.pipelines.len() - 1;
         }
     }
 }
@@ -250,6 +275,9 @@ async fn run_event_loop<B: Backend>(
             if let Ok(list) = client.session_list(&SessionListParams::default()).await {
                 app.set_sessions(list);
             }
+            if let Ok(pipes) = client.pipeline_list(&PipelineListParams::default()).await {
+                app.set_pipelines(pipes);
+            }
             if matches!(app.mode, UiMode::Browse) {
                 if let Some(ses) = app.selected_session().cloned() {
                     if let Ok(snap) = client.session_screen(&ses.id).await {
@@ -315,6 +343,40 @@ async fn handle_key(
                 app.mode = UiMode::Browse;
             }
         }
+        UiMode::Pipelines => match key.code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('P') => {
+                app.mode = UiMode::Browse;
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if !app.pipelines.is_empty() {
+                    app.selected_pipeline = (app.selected_pipeline + 1) % app.pipelines.len();
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if !app.pipelines.is_empty() {
+                    app.selected_pipeline = if app.selected_pipeline == 0 {
+                        app.pipelines.len() - 1
+                    } else {
+                        app.selected_pipeline - 1
+                    };
+                }
+            }
+            KeyCode::Char('c') => {
+                if let Some(run) = app.selected_pipeline().cloned() {
+                    match client.pipeline_cancel(&run.id).await {
+                        Ok(u) => {
+                            app.status_line =
+                                format!("Pipeline {} -> {}", short_id(&u.id), u.status.as_str());
+                        }
+                        Err(e) => app.status_line = format!("Gagal batalkan pipeline: {e}"),
+                    }
+                    if let Ok(pipes) = client.pipeline_list(&PipelineListParams::default()).await {
+                        app.set_pipelines(pipes);
+                    }
+                }
+            }
+            _ => {}
+        },
         UiMode::Confirm { action, session_id } => match key.code {
             KeyCode::Char('y') | KeyCode::Enter => {
                 match action {
@@ -429,6 +491,12 @@ async fn handle_key(
                     };
                 }
             }
+            KeyCode::Char('P') => {
+                if let Ok(pipes) = client.pipeline_list(&PipelineListParams::default()).await {
+                    app.set_pipelines(pipes);
+                }
+                app.mode = UiMode::Pipelines;
+            }
             _ => {}
         },
     }
@@ -471,15 +539,20 @@ pub fn render_ui(frame: &mut Frame<'_>, app: &mut TuiApp) {
         .constraints([Constraint::Percentage(36), Constraint::Percentage(64)])
         .split(outer[1]);
 
-    render_session_list(frame, app, body[0]);
-    match &app.mode {
-        UiMode::Diff { .. } => render_diff_panel(frame, app, body[1]),
-        _ => render_pty_panel(frame, app, body[1]),
+    if matches!(app.mode, UiMode::Pipelines) {
+        render_pipelines_list(frame, app, body[0]);
+        render_pipeline_arena_panel(frame, app, body[1]);
+    } else {
+        render_session_list(frame, app, body[0]);
+        match &app.mode {
+            UiMode::Diff { .. } => render_diff_panel(frame, app, body[1]),
+            _ => render_pty_panel(frame, app, body[1]),
+        }
     }
 
     let footer = Paragraph::new(vec![
         Line::from(app.status_line.as_str()),
-        Line::from("↑/↓ j/k: pilih | Enter/a: attach | Ctrl-b d: detach | p: pause/resume | d: diff | m: merge | x: kill | X: discard | ?: bantuan | q: keluar"),
+        Line::from("↑/↓ j/k: pilih | Enter/a: attach | Ctrl-b d: detach | p: pause/resume | d: diff | P: pipeline/arena | m: merge | x: kill | X: discard | ?: bantuan | q: keluar"),
     ])
     .style(Style::default().fg(Color::Gray));
     frame.render_widget(footer, outer[2]);
@@ -608,6 +681,135 @@ fn render_diff_panel(frame: &mut Frame<'_>, app: &TuiApp, area: Rect) {
         Block::default()
             .borders(Borders::ALL)
             .title("Diff (Esc/d untuk kembali)"),
+    );
+    frame.render_widget(p, area);
+}
+
+fn render_pipelines_list(frame: &mut Frame<'_>, app: &TuiApp, area: Rect) {
+    let items: Vec<ListItem<'_>> = app
+        .pipelines
+        .iter()
+        .map(|p| {
+            let color = match p.status {
+                PipelineStatus::Running | PipelineStatus::Pending => Color::Green,
+                PipelineStatus::Succeeded => Color::Cyan,
+                PipelineStatus::Failed | PipelineStatus::Tripped => Color::Red,
+                PipelineStatus::Cancelled => Color::Yellow,
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(
+                    format!("[{}] ", p.status.as_str()),
+                    Style::default().fg(color),
+                ),
+                Span::styled(
+                    p.workflow_name.as_str(),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(format!(" (${:.4})", p.total_cost_usd)),
+            ]))
+        })
+        .collect();
+
+    let mut state = ListState::default();
+    if !app.pipelines.is_empty() {
+        state.select(Some(app.selected_pipeline));
+    }
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Pipeline DAG (P/Esc: sesi, c: batal)"),
+        )
+        .highlight_style(
+            Style::default()
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        );
+    frame.render_stateful_widget(list, area, &mut state);
+}
+
+fn render_pipeline_arena_panel(frame: &mut Frame<'_>, app: &TuiApp, area: Rect) {
+    let mut lines = Vec::new();
+    if let Some(run) = app.selected_pipeline() {
+        lines.push(Line::from(Span::styled(
+            format!(
+                "Workflow: {} | Status: {} | Biaya: ${:.4}",
+                run.workflow_name,
+                run.status.as_str(),
+                run.total_cost_usd
+            ),
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+        if let Some(task) = &run.task {
+            lines.push(Line::from(format!("Task: {task}")));
+        }
+        lines.push(Line::from(""));
+
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&run.dag_state_json) {
+            if let Some(steps) = val.get("steps").and_then(|s| s.as_object()) {
+                for (step_id, step_val) in steps {
+                    let st = step_val
+                        .get("status")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?");
+                    let winner = step_val.get("winner").and_then(|v| v.as_str());
+                    lines.push(Line::from(Span::styled(
+                        format!(
+                            "Step '{step_id}' [{st}]{}",
+                            winner.map_or(String::new(), |w| format!(" · Pemenang: {w}"))
+                        ),
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    )));
+                    if let Some(cands) = step_val.get("candidates").and_then(|c| c.as_array()) {
+                        if !cands.is_empty() {
+                            lines.push(Line::from(
+                                "  Profil       | Status | Durasi   | Diff | Biaya",
+                            ));
+                            for cand in cands {
+                                let prof =
+                                    cand.get("profile").and_then(|v| v.as_str()).unwrap_or("-");
+                                let passed = cand
+                                    .get("passed")
+                                    .and_then(serde_json::Value::as_bool)
+                                    .unwrap_or(false);
+                                let dur = cand
+                                    .get("duration_ms")
+                                    .and_then(serde_json::Value::as_u64)
+                                    .unwrap_or(0);
+                                let diff_lines = cand
+                                    .get("diff_lines")
+                                    .and_then(serde_json::Value::as_u64)
+                                    .unwrap_or(0);
+                                let cost = cand
+                                    .get("cost_usd")
+                                    .and_then(serde_json::Value::as_f64)
+                                    .unwrap_or(0.0);
+                                let star = if winner == Some(prof) { "*" } else { " " };
+                                lines.push(Line::from(format!(
+                                    " {star}{prof:<12} | {:<6} | {:>6}ms | {:>4} | ${cost:.4}",
+                                    if passed { "LOLOS" } else { "GAGAL" },
+                                    dur,
+                                    diff_lines
+                                )));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        lines.push(Line::from(
+            "Belum ada pipeline. Jalankan `latch pipeline run` untuk memulai.",
+        ));
+    }
+
+    let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("Detail DAG & Fan-Out Arena"),
     );
     frame.render_widget(p, area);
 }
@@ -796,5 +998,29 @@ mod tests {
             .map(|c| c.symbol())
             .collect();
         assert!(modal_str.contains("Konfirmasi"));
+
+        // Uji tampilan Pipeline & Arena (T-409)
+        app.set_pipelines(vec![latch_core::model::PipelineRun {
+            id: new_id(),
+            project_id: new_id(),
+            workflow_name: "feature-arena".to_string(),
+            dag_state_json: r#"{"steps":{"implement":{"status":"succeeded","winner":"cheap","candidates":[{"profile":"cheap","passed":true,"duration_ms":300,"diff_lines":15,"cost_usd":0.1}]}}}"#.to_string(),
+            status: latch_core::model::PipelineStatus::Succeeded,
+            created_at: now_ms(),
+            updated_at: Some(now_ms()),
+            task: Some("arena test".to_string()),
+            total_cost_usd: 0.1,
+        }]);
+        app.mode = UiMode::Pipelines;
+        term.draw(|f| render_ui(f, &mut app)).unwrap();
+        let pipe_str: String = term
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(pipe_str.contains("feature-arena"));
+        assert!(pipe_str.contains("cheap"));
     }
 }

@@ -20,6 +20,24 @@ export interface Catalog {
     readyReview: string;
     attention: string;
   };
+  pipelines: {
+    heading: string;
+    empty: string;
+    arenaHeading: string;
+    viewArena: string;
+    cancel: string;
+    selectWinner: string;
+    winner: string;
+    passed: string;
+    failed: string;
+    profile: string;
+    status: string;
+    duration: string;
+    diffLines: string;
+    cost: string;
+    action: string;
+    noArenaSteps: string;
+  };
 }
 
 export const CATALOGS: Record<Locale, Catalog> = {
@@ -43,6 +61,24 @@ export const CATALOGS: Record<Locale, Catalog> = {
       readyReview: "Siap Review",
       attention: "Perlu Perhatian",
     },
+    pipelines: {
+      heading: "Pipeline DAG & Arena",
+      empty: "Belum ada eksekusi pipeline. Mulai lewat `latch pipeline run`.",
+      arenaHeading: "Matriks Perbandingan Fan-Out Arena",
+      viewArena: "Arena",
+      cancel: "Batalkan",
+      selectWinner: "Pilih Pemenang",
+      winner: "Pemenang",
+      passed: "Lolos",
+      failed: "Gagal",
+      profile: "Profil",
+      status: "Status",
+      duration: "Durasi",
+      diffLines: "Baris Diff",
+      cost: "Biaya",
+      action: "Aksi",
+      noArenaSteps: "Tidak ada langkah fan-out arena pada pipeline ini.",
+    },
   },
   en: {
     appName: "Latch Workbench",
@@ -63,6 +99,24 @@ export const CATALOGS: Record<Locale, Catalog> = {
       waitingApproval: "Waiting Approval",
       readyReview: "Ready for Review",
       attention: "Needs Attention",
+    },
+    pipelines: {
+      heading: "DAG Pipelines & Arena",
+      empty: "No pipeline runs yet. Start one via `latch pipeline run`.",
+      arenaHeading: "Fan-Out Arena Comparison Matrix",
+      viewArena: "Arena",
+      cancel: "Cancel",
+      selectWinner: "Select Winner",
+      winner: "Winner",
+      passed: "Pass",
+      failed: "Fail",
+      profile: "Profile",
+      status: "Status",
+      duration: "Duration",
+      diffLines: "Diff Lines",
+      cost: "Cost",
+      action: "Action",
+      noArenaSteps: "No fan-out arena steps recorded for this pipeline.",
     },
   },
 };

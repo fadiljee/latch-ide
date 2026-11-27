@@ -1,15 +1,27 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { DiffViewer } from "../features/diff/DiffViewer";
 import {
+  cancelPipeline,
   connectEventsSocket,
   decideApproval,
   fetchPendingApprovals,
+  fetchPipelineArena,
+  fetchPipelines,
   fetchSessionDiff,
   fetchSessions,
+  selectPipelineArenaWinner,
 } from "../lib/api/client";
-import type { ApprovalRequest, Session, SessionDiff } from "../lib/api/types";
+import type {
+  ApprovalRequest,
+  PipelineArenaResponse,
+  PipelineRun,
+  Session,
+  SessionDiff,
+} from "../lib/api/types";
 import { CATALOGS } from "../lib/i18n/catalog";
 import { useWorkbenchStore } from "../lib/store/useWorkbenchStore";
+
+const PipelineArenaPanel = lazy(() => import("../features/pipelines/PipelineArenaPanel"));
 
 export function App() {
   const locale = useWorkbenchStore((s) => s.locale);
@@ -30,6 +42,8 @@ export function App() {
   const [activeToken, setActiveToken] = useState(tokenInput);
   const [activeDiff, setActiveDiff] = useState<SessionDiff | null>(null);
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
+  const [pipelines, setPipelines] = useState<PipelineRun[]>([]);
+  const [activeArena, setActiveArena] = useState<PipelineArenaResponse | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
@@ -54,6 +68,15 @@ export function App() {
         .then((list) => {
           if (!cancelled) {
             setApprovals(list);
+          }
+        })
+        .catch(() => {
+          // Abaikan bila endpoint belum tersedia
+        });
+      void fetchPipelines(activeToken)
+        .then((list) => {
+          if (!cancelled) {
+            setPipelines(list);
           }
         })
         .catch(() => {
@@ -284,6 +307,55 @@ export function App() {
             closeLabel={t.closeLabel}
           />
         ) : null}
+
+        <Suspense fallback={null}>
+          <PipelineArenaPanel
+            pipelines={pipelines}
+            activeArena={activeArena}
+            labels={t.pipelines}
+            closeLabel={t.closeLabel}
+            onInspectArena={(run) => {
+              if (!activeToken) {
+                return;
+              }
+              void fetchPipelineArena(activeToken, run.id)
+                .then((arena) => {
+                  setActiveArena(arena);
+                  setErrorMsg(null);
+                })
+                .catch((err: unknown) => {
+                  setErrorMsg(err instanceof Error ? err.message : "Failed to load arena");
+                });
+            }}
+            onCancelPipeline={(id) => {
+              if (!activeToken) {
+                return;
+              }
+              void cancelPipeline(activeToken, id)
+                .then((updated) => {
+                  setPipelines((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
+                })
+                .catch((err: unknown) => {
+                  setErrorMsg(err instanceof Error ? err.message : "Failed to cancel pipeline");
+                });
+            }}
+            onSelectWinner={(pipelineId, stepId, candidateId) => {
+              if (!activeToken) {
+                return;
+              }
+              void selectPipelineArenaWinner(activeToken, pipelineId, stepId, candidateId)
+                .then(() => fetchPipelineArena(activeToken, pipelineId))
+                .then((arena) => {
+                  setActiveArena(arena);
+                  setErrorMsg(null);
+                })
+                .catch((err: unknown) => {
+                  setErrorMsg(err instanceof Error ? err.message : "Failed to select winner");
+                });
+            }}
+            onCloseArena={() => setActiveArena(null)}
+          />
+        </Suspense>
       </main>
     </div>
   );

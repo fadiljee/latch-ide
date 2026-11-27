@@ -6,9 +6,9 @@ use std::sync::Arc;
 
 use latch_core::id::now_ms;
 use latch_core::model::{
-    can_transition, ApprovalActionType, ApprovalDecision, ApprovalRequest, AuditEntry, Project,
-    ProxyMode, Session, SessionStatus, SessionTelemetrySummary, TelemetryRecord, TripReason,
-    UsageSource,
+    can_transition, ApprovalActionType, ApprovalDecision, ApprovalRequest, AuditEntry, PipelineRun,
+    PipelineStatus, Project, ProxyMode, Session, SessionSnapshot, SessionStatus,
+    SessionTelemetrySummary, TelemetryRecord, TripReason, UsageSource,
 };
 use latch_core::redact::redact_secrets;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -129,6 +129,44 @@ enum StoreCmd {
         decision: ApprovalDecision,
         decided_by: String,
         reply: Reply<ApprovalRequest>,
+    },
+    InsertPipelineRun {
+        run: PipelineRun,
+        reply: Reply<PipelineRun>,
+    },
+    GetPipelineRun {
+        id_or_prefix: String,
+        reply: Reply<PipelineRun>,
+    },
+    ListPipelineRuns {
+        project_id: Option<String>,
+        reply: Reply<Vec<PipelineRun>>,
+    },
+    UpdatePipelineRun {
+        id: String,
+        status: PipelineStatus,
+        dag_state_json: String,
+        total_cost_usd: f64,
+        reply: Reply<PipelineRun>,
+    },
+    SaveSnapshot {
+        snapshot: SessionSnapshot,
+        reply: Reply<()>,
+    },
+    GetSnapshot {
+        session_id: String,
+        reply: Reply<Option<SessionSnapshot>>,
+    },
+    SetSessionPid {
+        session_id: String,
+        pid: Option<i64>,
+        reply: Reply<()>,
+    },
+    PruneRetention {
+        telemetry_before_ms: i64,
+        audit_before_ms: i64,
+        dry_run: bool,
+        reply: Reply<(u64, u64)>,
     },
     Shutdown {
         reply: Reply<()>,
@@ -384,6 +422,100 @@ impl StoreHandle {
         })
         .await
     }
+
+    /// Menyimpan rekaman eksekusi pipeline baru (`pipeline_runs`, `T-408`).
+    pub async fn insert_pipeline_run(&self, run: PipelineRun) -> Result<PipelineRun, StoreError> {
+        self.request(|reply| StoreCmd::InsertPipelineRun { run, reply })
+            .await
+    }
+
+    /// Mengambil rekaman pipeline berdasarkan ID lengkap atau awalan unik.
+    pub async fn get_pipeline_run(&self, id_or_prefix: &str) -> Result<PipelineRun, StoreError> {
+        let key = id_or_prefix.to_string();
+        self.request(|reply| StoreCmd::GetPipelineRun {
+            id_or_prefix: key,
+            reply,
+        })
+        .await
+    }
+
+    /// Mengambil daftar pipeline dengan filter proyek opsional.
+    pub async fn list_pipeline_runs(
+        &self,
+        project_id: Option<String>,
+    ) -> Result<Vec<PipelineRun>, StoreError> {
+        self.request(|reply| StoreCmd::ListPipelineRuns { project_id, reply })
+            .await
+    }
+
+    /// Memperbarui status, `dag_state_json`, dan biaya kumulatif pipeline.
+    pub async fn update_pipeline_run(
+        &self,
+        id: &str,
+        status: PipelineStatus,
+        dag_state_json: String,
+        total_cost_usd: f64,
+    ) -> Result<PipelineRun, StoreError> {
+        let id = id.to_string();
+        self.request(|reply| StoreCmd::UpdatePipelineRun {
+            id,
+            status,
+            dag_state_json,
+            total_cost_usd,
+            reply,
+        })
+        .await
+    }
+
+    /// Menyimpan atau memperbarui snapshot sesi saat hibernasi (`T-410`).
+    pub async fn save_session_snapshot(&self, snapshot: SessionSnapshot) -> Result<(), StoreError> {
+        self.request(|reply| StoreCmd::SaveSnapshot { snapshot, reply })
+            .await
+    }
+
+    /// Mengambil snapshot sesi terakhir jika ada (`T-410`).
+    pub async fn get_session_snapshot(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<SessionSnapshot>, StoreError> {
+        let id = session_id.to_string();
+        self.request(|reply| StoreCmd::GetSnapshot {
+            session_id: id,
+            reply,
+        })
+        .await
+    }
+
+    /// Memperbarui PID proses PTY sesi (digunakan saat resume dari hibernasi).
+    pub async fn set_session_pid(
+        &self,
+        session_id: &str,
+        pid: Option<i64>,
+    ) -> Result<(), StoreError> {
+        let id = session_id.to_string();
+        self.request(|reply| StoreCmd::SetSessionPid {
+            session_id: id,
+            pid,
+            reply,
+        })
+        .await
+    }
+
+    /// Memangkas baris telemetri dan log audit lama sesuai kebijakan retensi (`T-411`).
+    pub async fn prune_retention(
+        &self,
+        telemetry_before_ms: i64,
+        audit_before_ms: i64,
+        dry_run: bool,
+    ) -> Result<(u64, u64), StoreError> {
+        self.request(|reply| StoreCmd::PruneRetention {
+            telemetry_before_ms,
+            audit_before_ms,
+            dry_run,
+            reply,
+        })
+        .await
+    }
 }
 
 fn configure_and_migrate(conn: &Connection) -> Result<(), StoreError> {
@@ -502,6 +634,59 @@ fn run_actor(mut conn: Connection, mut rx: mpsc::Receiver<StoreCmd>) {
                 reply,
             } => {
                 let _ = reply.send(exec_decide_approval(&conn, &id, decision, &decided_by));
+            }
+            StoreCmd::InsertPipelineRun { run, reply } => {
+                let _ = reply.send(exec_insert_pipeline_run(&conn, run));
+            }
+            StoreCmd::GetPipelineRun {
+                id_or_prefix,
+                reply,
+            } => {
+                let _ = reply.send(exec_get_pipeline_run(&conn, &id_or_prefix));
+            }
+            StoreCmd::ListPipelineRuns { project_id, reply } => {
+                let _ = reply.send(exec_list_pipeline_runs(&conn, project_id.as_deref()));
+            }
+            StoreCmd::UpdatePipelineRun {
+                id,
+                status,
+                dag_state_json,
+                total_cost_usd,
+                reply,
+            } => {
+                let _ = reply.send(exec_update_pipeline_run(
+                    &conn,
+                    &id,
+                    status,
+                    &dag_state_json,
+                    total_cost_usd,
+                ));
+            }
+            StoreCmd::SaveSnapshot { snapshot, reply } => {
+                let _ = reply.send(exec_save_snapshot(&conn, snapshot));
+            }
+            StoreCmd::GetSnapshot { session_id, reply } => {
+                let _ = reply.send(exec_get_snapshot(&conn, &session_id));
+            }
+            StoreCmd::SetSessionPid {
+                session_id,
+                pid,
+                reply,
+            } => {
+                let _ = reply.send(exec_set_session_pid(&conn, &session_id, pid));
+            }
+            StoreCmd::PruneRetention {
+                telemetry_before_ms,
+                audit_before_ms,
+                dry_run,
+                reply,
+            } => {
+                let _ = reply.send(exec_prune_retention(
+                    &conn,
+                    telemetry_before_ms,
+                    audit_before_ms,
+                    dry_run,
+                ));
             }
             StoreCmd::Shutdown { reply } => {
                 let _ = reply.send(Ok(()));
@@ -949,6 +1134,218 @@ fn exec_decide_approval(
     Ok(row)
 }
 
+fn exec_insert_pipeline_run(
+    conn: &Connection,
+    mut run: PipelineRun,
+) -> Result<PipelineRun, StoreError> {
+    run.task = run.task.map(|t| truncate_redacted(&t, 512));
+    conn.execute(
+        "INSERT INTO pipeline_runs (
+            id, project_id, workflow_name, dag_state_json, status,
+            created_at, updated_at, task, total_cost_usd
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            run.id,
+            run.project_id,
+            run.workflow_name,
+            run.dag_state_json,
+            run.status.as_str(),
+            run.created_at,
+            run.updated_at,
+            run.task,
+            run.total_cost_usd,
+        ],
+    )?;
+    Ok(run)
+}
+
+fn exec_get_pipeline_run(conn: &Connection, id_or_prefix: &str) -> Result<PipelineRun, StoreError> {
+    if let Some(exact) = conn
+        .query_row(
+            "SELECT id, project_id, workflow_name, dag_state_json, status,
+                    created_at, updated_at, task, total_cost_usd
+             FROM pipeline_runs WHERE id = ?1 LIMIT 1",
+            params![id_or_prefix],
+            row_to_pipeline_run,
+        )
+        .optional()?
+    {
+        return Ok(exact);
+    }
+
+    let like_pattern = format!("{id_or_prefix}%");
+    let mut stmt = conn.prepare(
+        "SELECT id, project_id, workflow_name, dag_state_json, status,
+                created_at, updated_at, task, total_cost_usd
+         FROM pipeline_runs WHERE id LIKE ?1 LIMIT 2",
+    )?;
+    let mut rows = stmt.query_map(params![like_pattern], row_to_pipeline_run)?;
+    match (rows.next(), rows.next()) {
+        (Some(first), None) => Ok(first?),
+        (Some(_), Some(_)) => Err(StoreError::Integrity(format!(
+            "ambiguous pipeline id prefix '{id_or_prefix}'"
+        ))),
+        _ => Err(StoreError::NotFound {
+            entity: "pipeline",
+            key: id_or_prefix.to_string(),
+        }),
+    }
+}
+
+fn exec_list_pipeline_runs(
+    conn: &Connection,
+    project_id: Option<&str>,
+) -> Result<Vec<PipelineRun>, StoreError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, project_id, workflow_name, dag_state_json, status,
+                created_at, updated_at, task, total_cost_usd
+         FROM pipeline_runs
+         WHERE (?1 IS NULL OR project_id = ?1)
+         ORDER BY created_at DESC",
+    )?;
+    let rows = stmt.query_map(params![project_id], row_to_pipeline_run)?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
+fn exec_update_pipeline_run(
+    conn: &Connection,
+    id: &str,
+    status: PipelineStatus,
+    dag_state_json: &str,
+    total_cost_usd: f64,
+) -> Result<PipelineRun, StoreError> {
+    let existing = exec_get_pipeline_run(conn, id)?;
+    let now = now_ms();
+    conn.execute(
+        "UPDATE pipeline_runs
+         SET status = ?2, dag_state_json = ?3, total_cost_usd = ?4, updated_at = ?5
+         WHERE id = ?1",
+        params![
+            existing.id,
+            status.as_str(),
+            dag_state_json,
+            total_cost_usd,
+            now
+        ],
+    )?;
+    exec_get_pipeline_run(conn, &existing.id)
+}
+
+fn exec_save_snapshot(conn: &Connection, mut snap: SessionSnapshot) -> Result<(), StoreError> {
+    snap.context_summary = snap.context_summary.map(|s| truncate_redacted(&s, 8192));
+    conn.execute(
+        "INSERT INTO session_snapshots (
+            session_id, screen_blob, worktree_head, git_status_json, context_summary, created_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(session_id) DO UPDATE SET
+            screen_blob = excluded.screen_blob,
+            worktree_head = excluded.worktree_head,
+            git_status_json = excluded.git_status_json,
+            context_summary = excluded.context_summary,
+            created_at = excluded.created_at",
+        params![
+            snap.session_id,
+            snap.screen_blob,
+            snap.worktree_head,
+            snap.git_status_json,
+            snap.context_summary,
+            snap.created_at,
+        ],
+    )?;
+    Ok(())
+}
+
+fn exec_get_snapshot(
+    conn: &Connection,
+    session_id: &str,
+) -> Result<Option<SessionSnapshot>, StoreError> {
+    conn.query_row(
+        "SELECT session_id, screen_blob, worktree_head, git_status_json, context_summary, created_at
+         FROM session_snapshots WHERE session_id = ?1",
+        params![session_id],
+        |row| {
+            let blob: Option<Vec<u8>> = row.get(1)?;
+            Ok(SessionSnapshot {
+                session_id: row.get(0)?,
+                screen_blob: blob.unwrap_or_default(),
+                worktree_head: row.get(2)?,
+                git_status_json: row.get(3)?,
+                context_summary: row.get(4)?,
+                created_at: row.get(5)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(StoreError::from)
+}
+
+fn exec_set_session_pid(
+    conn: &Connection,
+    session_id: &str,
+    pid: Option<i64>,
+) -> Result<(), StoreError> {
+    conn.execute(
+        "UPDATE sessions SET pid = ?2 WHERE id = ?1",
+        params![session_id, pid],
+    )?;
+    Ok(())
+}
+
+fn exec_prune_retention(
+    conn: &Connection,
+    telemetry_before_ms: i64,
+    audit_before_ms: i64,
+    dry_run: bool,
+) -> Result<(u64, u64), StoreError> {
+    if dry_run {
+        let tel: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM proxy_telemetry WHERE timestamp < ?1",
+            params![telemetry_before_ms],
+            |row| row.get(0),
+        )?;
+        let aud: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM audit_log WHERE timestamp < ?1",
+            params![audit_before_ms],
+            |row| row.get(0),
+        )?;
+        return Ok((
+            u64::try_from(tel).unwrap_or(0),
+            u64::try_from(aud).unwrap_or(0),
+        ));
+    }
+    let tel = conn.execute(
+        "DELETE FROM proxy_telemetry WHERE timestamp < ?1",
+        params![telemetry_before_ms],
+    )?;
+    let aud = conn.execute(
+        "DELETE FROM audit_log WHERE timestamp < ?1",
+        params![audit_before_ms],
+    )?;
+    Ok((tel as u64, aud as u64))
+}
+
+fn row_to_pipeline_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<PipelineRun> {
+    let status_raw: String = row.get(4)?;
+    let status = status_raw.parse::<PipelineStatus>().map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(e))
+    })?;
+    Ok(PipelineRun {
+        id: row.get(0)?,
+        project_id: row.get(1)?,
+        workflow_name: row.get(2)?,
+        dag_state_json: row.get(3)?,
+        status,
+        created_at: row.get(5)?,
+        updated_at: row.get(6)?,
+        task: row.get(7)?,
+        total_cost_usd: row.get(8)?,
+    })
+}
+
 fn row_to_approval(row: &rusqlite::Row<'_>) -> rusqlite::Result<ApprovalRequest> {
     let act_raw: String = row.get(2)?;
     let action_type = act_raw.parse::<ApprovalActionType>().map_err(|e| {
@@ -1035,7 +1432,9 @@ fn truncate_redacted(raw: &str, max_bytes: usize) -> String {
 #[cfg(test)]
 mod tests {
     use latch_core::id::{new_id, now_ms};
-    use latch_core::model::{AuditEntry, Project, ProxyMode, Session, SessionStatus};
+    use latch_core::model::{
+        AuditEntry, PipelineRun, PipelineStatus, Project, ProxyMode, Session, SessionStatus,
+    };
 
     use super::{StoreError, StoreHandle};
 
@@ -1111,5 +1510,40 @@ mod tests {
             .unwrap();
         let logs = store.list_audit(10).await.unwrap();
         assert!(!logs[0].detail.contains("CANARY"));
+
+        // Uji CRUD pipeline_runs (T-408)
+        let run = PipelineRun {
+            id: new_id(),
+            project_id: proj.id.clone(),
+            workflow_name: "feature-verify".to_string(),
+            dag_state_json: r#"{"status":"running"}"#.to_string(),
+            status: PipelineStatus::Running,
+            created_at: now_ms(),
+            updated_at: None,
+            task: Some("Run Bearer sk-test-CANARY9999999999".to_string()),
+            total_cost_usd: 0.0,
+        };
+        let saved_run = store.insert_pipeline_run(run).await.unwrap();
+        assert!(!saved_run.task.as_deref().unwrap().contains("CANARY"));
+        assert_eq!(
+            store
+                .list_pipeline_runs(Some(proj.id.clone()))
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        let updated_run = store
+            .update_pipeline_run(
+                &saved_run.id[..8],
+                PipelineStatus::Succeeded,
+                r#"{"status":"succeeded"}"#.to_string(),
+                0.42,
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated_run.status, PipelineStatus::Succeeded);
+        assert!((updated_run.total_cost_usd - 0.42).abs() < 1e-6);
+        assert!(updated_run.updated_at.is_some());
     }
 }

@@ -4,6 +4,17 @@ Format mengikuti [Keep a Changelog](https://keepachangelog.com/id-ID/1.1.0/) dan
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-11-27
+
+### Added
+- **Fase 4 — Otomasi Penuh, Pipeline DAG, Arena, Hibernasi & GC (`T-401`–`T-412`):**
+  - `latch-dag`: parser & validator `workflow.toml` dengan deteksi siklus Kahn + validasi leluhur `on_fail_retry_step`, templating strict (`{{var}}`) + pemotongan output UTF-8 aman (`[...dipotong...]`), eksekutor DAG (`agent`, `shell`, `fanout`), retry gate dengan umpan balik stdout/stderr, matriks Fan-Out Arena dengan strategi pemilihan pemenang (`manual`, `cheapest_passing`, `fastest_passing`, `smallest_diff_passing`), dan circuit breaker anggaran pipeline (`max_budget_usd`).
+  - `latch-store`, `latch-core`, `latch-daemon`, `latch-cli`: persistensi `pipeline_runs`, eksekutor `DaemonStepRunner`, rekonsiliasi pemulihan pipeline pasca-restart (`T-408`), endpoint UDS `pipeline.*`, REST `/api/v1/pipelines*` + `/arena` + `/arena/select`, event WebSocket `pipeline.status`, dan CLI `latch pipeline run|ls|show|cancel|select`.
+  - `latch-tui` & `web/`: tampilan **Pipeline DAG & Fan-Out Arena** di TUI (tombol `P`) dan komponen lazy-loaded `PipelineArenaPanel` (1,38 kB gzip, aksesibel, i18n `id`/`en`) di Web PWA (`T-409`).
+  - `latch-pty-pool`, `latch-store`, `latch-daemon`, `latch-cli`: pelacakan aktivitas idle PTY, hibernasi idle otomatis & manual (`session.hibernate`, `POST /api/v1/sessions/{id}/hibernate`, `latch session hibernate`) dengan penyimpanan `session_snapshots` dan pemulihan konteks (`resume_args` + `LATCH_RESUME_CONTEXT`) (`T-410`).
+  - `latch-daemon` & `latch-cli`: `latch gc [--dry-run]` (`daemon.gc`, `POST /api/v1/gc`) untuk pemangkasan retensi `proxy_telemetry`/`audit_log` serta pembersihan direktori `tmp/` dan log PTY yatim (`T-411`).
+  - Installer satu baris `scripts/install.sh` untuk Linux `x86_64` static musl binary dengan verifikasi `SHA256SUMS.txt`.
+
 ## [0.3.0] - 2026-11-27
 
 ### Added

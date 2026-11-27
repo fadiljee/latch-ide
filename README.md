@@ -15,7 +15,7 @@
 
 <p align="center">
   <a href="https://github.com/fadiljee/latch-ide/actions/workflows/ci.yml"><img src="https://github.com/fadiljee/latch-ide/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
-  <a href="https://github.com/fadiljee/latch-ide/releases/tag/v0.3.0"><img src="https://img.shields.io/badge/release-v0.3.0-blue" alt="Release: v0.3.0" /></a>
+  <a href="https://github.com/fadiljee/latch-ide/releases/tag/v1.0.0"><img src="https://img.shields.io/badge/release-v1.0.0-blue" alt="Release: v1.0.0" /></a>
   <img src="https://img.shields.io/badge/rust-1.85%2B-orange" alt="Rust 1.85+" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-green" alt="License: Apache-2.0" /></a>
   <a href="CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen" alt="PRs Welcome" /></a>
@@ -41,7 +41,8 @@ Running multiple AI coding CLIs (`claude`, `codex`, `opencode`, `gemini`, or cus
 | **Workbench Scaffold** | `web/` foundation (Vite + React + strict TypeScript + Tailwind CSS + Zustand + `id`/`en` i18n + ESLint `jsx-a11y` + Vitest + gzipped bundle-size gate) | `I0` | Done |
 | **LLM Proxy & Web PWA** | Local HTTP/SSE reverse proxy (`rustls`), token/cost telemetry (`pricing.toml`), automated circuit breaker (`< 1 s`), REST/WS + embedded Web PWA (`rust-embed`, CSP), HMAC webhooks & SSH remote tunnel | `v0.2` | Done |
 | **OS Sandbox & Approvals** | Linux Landlock filesystem jail (`ABI v1–v5`), toolchain presets, sensitive path denylist, egress domain allowlist, PATH shim, interactive Approval Gate (REST/WS + Web Inbox) | `v0.3` | Done |
-| **DAG Pipelines & Full IDE** | Declarative `workflow.toml` DAG, retry gates, fan-out arena, idle hibernation, CodeMirror 6 editor, fuzzy/regex search, sandboxed LSP | `v1.0`–`v1.2` | Planned |
+| **DAG Pipelines, Arena, Hibernation & GC** | Declarative `workflow.toml` DAG, strict templating, retry gates, Fan-Out Arena matrix & winner selection, restart recovery, TUI + Web Arena UI, idle hibernation + snapshots, `latch gc` retention | `v1.0` | Done |
+| **Full Agent IDE** | CodeMirror 6 editor, fuzzy/regex search, sandboxed LSP, structured agent protocol | `v1.1`–`v1.2` | Planned |
 
 ## Benchmark Results (`v0.2`)
 
@@ -65,23 +66,33 @@ latch-ide/
 │   ├── store/                 # Bundled SQLite (single-writer actor + 0001 migration)
 │   ├── git-engine/            # Worktrees, diffs, merge-tree simulation, squash/merge & discard
 │   ├── pty-pool/              # PTY pool, ring buffer, rolling logs, 8–16 ms batching, vt100
-│   ├── sandbox/               # SandboxProvider trait & NoopProvider (Landlock in v0.3)
-│   ├── daemon/                # SessionManager, UDS server, startup reconciliation, redacted tracing logs
-│   ├── tui/                   # Thin ratatui terminal UI client over UDS
-│   ├── proxy/                 # Phase 2 stub: local LLM reverse proxy & circuit breaker
-│   ├── dag/                   # Phase 4 stub: workflow.toml DAG executor
+│   ├── sandbox/               # SandboxProvider trait, LandlockProvider (ABI v1–v5), toolchain presets & denylist
+│   ├── daemon/                # SessionManager, UDS + HTTP/WS server, DAG runner, hibernation, GC, startup reconciliation
+│   ├── tui/                   # Thin ratatui terminal UI client over UDS (sessions, PTY, diff, pipelines & arena)
+│   ├── proxy/                 # Local LLM HTTP/SSE reverse proxy, token/cost telemetry, egress allowlist & circuit breaker
+│   ├── dag/                   # Declarative workflow.toml DAG parser, strict templates, retry gate & fan-out arena
 │   ├── fs-service/            # IDE stub: guarded worktree file service
 │   ├── search/                # IDE stub: fuzzy file index & streaming text search
 │   ├── lsp-host/              # IDE stub: sandboxed LSP host
 │   ├── agent-proto/           # IDE stub: structured agent protocol adapter
 │   └── workbench-api/         # IDE stub: REST/WS routes & scoped token auth
-├── web/                       # Agent IDE Workbench frontend (React + TypeScript + Vite + Tailwind)
-└── scripts/                   # Binary size/static gate (check-binary.sh) and RSS benchmark (bench-rss.sh)
+├── web/                       # Agent IDE Workbench PWA (React + TypeScript + Vite + Tailwind + Pipeline Arena)
+└── scripts/                   # Installer (install.sh), binary size/static gate (check-binary.sh), RSS benchmark (bench-rss.sh)
 ```
 
-## Quick Start (`v0.1`)
+## Quick Start
 
-### Prerequisites
+### Install via `curl` (Linux x86_64 static musl binary)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/fadiljee/latch-ide/main/scripts/install.sh | sh
+```
+
+> Installs `latch` (and `latchd` symlink) to `~/.local/bin` with SHA-256 verification. Override with `LATCH_VERSION=v1.0.0` or `LATCH_INSTALL_DIR=/usr/local/bin`.
+
+### Build from Source
+
+#### Prerequisites
 
 - Rust stable `>= 1.85` (plus `musl-tools` and target `x86_64-unknown-linux-musl` for static musl builds)
 - `git >= 2.38`
@@ -116,8 +127,15 @@ cargo build --release -p latch-cli
 ./target/release/latch session diff <session-id>
 ./target/release/latch session merge-check <session-id>
 ./target/release/latch session merge <session-id> --squash
-# Or discard:
+# Or hibernate/resume an idle session, or discard:
+./target/release/latch session hibernate <session-id>
+./target/release/latch session resume <session-id>
 ./target/release/latch session discard <session-id>
+
+# 8. Run a declarative DAG pipeline & clean up old retention data
+./target/release/latch pipeline run --project my-repo --workflow ./workflow.toml --task "Add metrics"
+./target/release/latch pipeline ls
+./target/release/latch gc --dry-run
 ```
 
 > Optional environment overrides for isolated state/testing: `LATCH_CONFIG_DIR`, `LATCH_STATE_DIR`, `LATCH_SOCKET`, and `LATCH_LOG`.

@@ -1122,7 +1122,7 @@ dependencies = [
 
 [[package]]
 name = "latch-agent-proto"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "latch-core",
  "thiserror 2.0.21",
@@ -1130,7 +1130,7 @@ dependencies = [
 
 [[package]]
 name = "latch-cli"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1144,7 +1144,7 @@ dependencies = [
 
 [[package]]
 name = "latch-core"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "chrono",
  "proptest",
@@ -1159,7 +1159,7 @@ dependencies = [
 
 [[package]]
 name = "latch-daemon"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1196,15 +1196,19 @@ dependencies = [
 
 [[package]]
 name = "latch-dag"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "latch-core",
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
+ "tokio",
+ "toml",
 ]
 
 [[package]]
 name = "latch-fs-service"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "latch-core",
  "thiserror 2.0.21",
@@ -1212,7 +1216,7 @@ dependencies = [
 
 [[package]]
 name = "latch-git-engine"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "latch-core",
  "tempfile",
@@ -1222,7 +1226,7 @@ dependencies = [
 
 [[package]]
 name = "latch-lsp-host"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "latch-core",
  "latch-pty-pool",
@@ -1232,7 +1236,7 @@ dependencies = [
 
 [[package]]
 name = "latch-proxy"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -1252,7 +1256,7 @@ dependencies = [
 
 [[package]]
 name = "latch-pty-pool"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "latch-core",
  "nix 0.29.0",
@@ -1266,7 +1270,7 @@ dependencies = [
 
 [[package]]
 name = "latch-sandbox"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "landlock",
  "latch-core",
@@ -1277,7 +1281,7 @@ dependencies = [
 
 [[package]]
 name = "latch-search"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "latch-core",
  "thiserror 2.0.21",
@@ -1285,7 +1289,7 @@ dependencies = [
 
 [[package]]
 name = "latch-store"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "latch-core",
  "rusqlite",
@@ -1296,11 +1300,12 @@ dependencies = [
 
 [[package]]
 name = "latch-tui"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "crossterm",
  "latch-core",
  "ratatui",
+ "serde_json",
  "thiserror 2.0.21",
  "tokio",
  "vt100",
@@ -1308,7 +1313,7 @@ dependencies = [
 
 [[package]]
 name = "latch-workbench-api"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "latch-agent-proto",
  "latch-core",
