@@ -4,6 +4,16 @@ Format mengikuti [Keep a Changelog](https://keepachangelog.com/id-ID/1.1.0/) dan
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-27
+
+### Added
+- **Fase 3 — Keamanan & Approval Gate (`T-301`–`T-312`):**
+  - `latch-sandbox`: implementasi nyata `LandlockProvider` (Linux `>= 5.13`, probing ABI v1–v5, `NO_NEW_PRIVS`, default-deny allowlist), preset toolchain (`system`, `rust`, `node`, `python`, `git`), pemfilteran denylist sensitif (`~/.ssh`, `~/.aws`, `~/.gnupg`, dll.), dan laporan `dry_run_policy`.
+  - `latch-proxy`: allowlist domain egress kooperatif (`403 Forbidden` di luar allowlist).
+  - `latch-store` & `latch-daemon`: tabel & API approval gate (`/api/v1/approvals`, `/api/v1/approvals/{id}/decision`, event WebSocket `approval.requested`/`approval.decided`, wakeup `< 500 ms`, timeout default-deny, audit log) serta generator PATH shim `git push` (`crates/daemon/src/shim.rs`).
+  - `web/`: panel **Approvals Inbox** (Approve / Deny) terhubung ke REST/WS daemon.
+  - Suite tes keamanan otomatis (`crates/sandbox/tests/landlock_security.rs` dan `crates/daemon/tests/approval_and_security.rs`) serta ADR-0008 & ADR-0009.
+
 ## [0.2.0] - 2026-11-27
 
 ### Added

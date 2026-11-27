@@ -1,4 +1,4 @@
-import type { MergeCheckResult, Session, SessionDetail, SessionDiff } from "./types";
+import type { ApprovalRequest, MergeCheckResult, Session, SessionDetail, SessionDiff } from "./types";
 
 function authHeaders(token: string): HeadersInit {
   return {
@@ -59,6 +59,30 @@ export async function postSessionAction(
   if (!resp.ok) {
     throw new Error(`HTTP ${resp.status}`);
   }
+}
+
+export async function fetchPendingApprovals(token: string): Promise<ApprovalRequest[]> {
+  const resp = await fetch("/api/v1/approvals?status=pending", { headers: authHeaders(token) });
+  if (!resp.ok) {
+    throw new Error(`HTTP ${resp.status}`);
+  }
+  return (await resp.json()) as ApprovalRequest[];
+}
+
+export async function decideApproval(
+  token: string,
+  id: string,
+  decision: "approved" | "denied",
+): Promise<ApprovalRequest> {
+  const resp = await fetch(`/api/v1/approvals/${encodeURIComponent(id)}/decision`, {
+    method: "POST",
+    headers: authHeaders(token),
+    body: JSON.stringify({ decision, decided_by: "web" }),
+  });
+  if (!resp.ok) {
+    throw new Error(`HTTP ${resp.status}`);
+  }
+  return (await resp.json()) as ApprovalRequest;
 }
 
 export function connectEventsSocket(

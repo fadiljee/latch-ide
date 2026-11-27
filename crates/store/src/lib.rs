@@ -6,8 +6,9 @@ use std::sync::Arc;
 
 use latch_core::id::now_ms;
 use latch_core::model::{
-    can_transition, AuditEntry, Project, ProxyMode, Session, SessionStatus,
-    SessionTelemetrySummary, TelemetryRecord, TripReason, UsageSource,
+    can_transition, ApprovalActionType, ApprovalDecision, ApprovalRequest, AuditEntry, Project,
+    ProxyMode, Session, SessionStatus, SessionTelemetrySummary, TelemetryRecord, TripReason,
+    UsageSource,
 };
 use latch_core::redact::redact_secrets;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -114,6 +115,20 @@ enum StoreCmd {
     SessionTelemetrySummary {
         session_id: String,
         reply: Reply<SessionTelemetrySummary>,
+    },
+    InsertApproval {
+        req: ApprovalRequest,
+        reply: Reply<ApprovalRequest>,
+    },
+    ListApprovals {
+        decision: Option<ApprovalDecision>,
+        reply: Reply<Vec<ApprovalRequest>>,
+    },
+    DecideApproval {
+        id: String,
+        decision: ApprovalDecision,
+        decided_by: String,
+        reply: Reply<ApprovalRequest>,
     },
     Shutdown {
         reply: Reply<()>,
@@ -333,6 +348,42 @@ impl StoreHandle {
         })
         .await
     }
+
+    /// Menyimpan permintaan persetujuan baru (`approval_requests`, `T-308`).
+    pub async fn insert_approval(
+        &self,
+        req: ApprovalRequest,
+    ) -> Result<ApprovalRequest, StoreError> {
+        self.request(|reply| StoreCmd::InsertApproval { req, reply })
+            .await
+    }
+
+    /// Mengambil daftar permintaan persetujuan (otomatis menandai kedaluwarsa sebagai `denied`).
+    pub async fn list_approvals(
+        &self,
+        decision: Option<ApprovalDecision>,
+    ) -> Result<Vec<ApprovalRequest>, StoreError> {
+        self.request(|reply| StoreCmd::ListApprovals { decision, reply })
+            .await
+    }
+
+    /// Mencatat keputusan manusia/timeout pada permintaan persetujuan.
+    pub async fn decide_approval(
+        &self,
+        id: &str,
+        decision: ApprovalDecision,
+        decided_by: &str,
+    ) -> Result<ApprovalRequest, StoreError> {
+        let id = id.to_string();
+        let decided_by = decided_by.to_string();
+        self.request(|reply| StoreCmd::DecideApproval {
+            id,
+            decision,
+            decided_by,
+            reply,
+        })
+        .await
+    }
 }
 
 fn configure_and_migrate(conn: &Connection) -> Result<(), StoreError> {
@@ -437,6 +488,20 @@ fn run_actor(mut conn: Connection, mut rx: mpsc::Receiver<StoreCmd>) {
             }
             StoreCmd::SessionTelemetrySummary { session_id, reply } => {
                 let _ = reply.send(exec_session_telemetry_summary(&conn, &session_id));
+            }
+            StoreCmd::InsertApproval { req, reply } => {
+                let _ = reply.send(exec_insert_approval(&conn, req));
+            }
+            StoreCmd::ListApprovals { decision, reply } => {
+                let _ = reply.send(exec_list_approvals(&conn, decision));
+            }
+            StoreCmd::DecideApproval {
+                id,
+                decision,
+                decided_by,
+                reply,
+            } => {
+                let _ = reply.send(exec_decide_approval(&conn, &id, decision, &decided_by));
             }
             StoreCmd::Shutdown { reply } => {
                 let _ = reply.send(Ok(()));
@@ -789,6 +854,121 @@ fn exec_session_telemetry_summary(
         },
     )
     .map_err(StoreError::from)
+}
+
+fn expire_stale_approvals(conn: &Connection) -> Result<(), StoreError> {
+    let now = now_ms();
+    conn.execute(
+        "UPDATE approval_requests
+         SET decision = 'denied', decided_by = 'timeout', decided_at = ?1
+         WHERE decision = 'pending' AND expires_at IS NOT NULL AND expires_at <= ?1",
+        params![now],
+    )?;
+    Ok(())
+}
+
+fn exec_insert_approval(
+    conn: &Connection,
+    mut req: ApprovalRequest,
+) -> Result<ApprovalRequest, StoreError> {
+    req.payload_summary = truncate_redacted(&req.payload_summary, 1024);
+    conn.execute(
+        "INSERT INTO approval_requests (
+            id, session_id, action_type, payload_summary, decision,
+            decided_by, decided_at, created_at, expires_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            req.id,
+            req.session_id,
+            req.action_type.as_str(),
+            req.payload_summary,
+            req.decision.as_str(),
+            req.decided_by,
+            req.decided_at,
+            req.created_at,
+            req.expires_at,
+        ],
+    )?;
+    Ok(req)
+}
+
+fn exec_list_approvals(
+    conn: &Connection,
+    decision: Option<ApprovalDecision>,
+) -> Result<Vec<ApprovalRequest>, StoreError> {
+    expire_stale_approvals(conn)?;
+    let dec_str = decision.map(ApprovalDecision::as_str);
+    let mut stmt = conn.prepare(
+        "SELECT id, session_id, action_type, payload_summary, decision,
+                decided_by, decided_at, created_at, expires_at
+         FROM approval_requests
+         WHERE (?1 IS NULL OR decision = ?1)
+         ORDER BY created_at DESC",
+    )?;
+    let rows = stmt.query_map(params![dec_str], row_to_approval)?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
+fn exec_decide_approval(
+    conn: &Connection,
+    id: &str,
+    decision: ApprovalDecision,
+    decided_by: &str,
+) -> Result<ApprovalRequest, StoreError> {
+    expire_stale_approvals(conn)?;
+    let now = now_ms();
+    let affected = conn.execute(
+        "UPDATE approval_requests
+         SET decision = ?2, decided_by = ?3, decided_at = ?4
+         WHERE id = ?1 AND decision = 'pending'",
+        params![id, decision.as_str(), decided_by, now],
+    )?;
+    let row = conn
+        .query_row(
+            "SELECT id, session_id, action_type, payload_summary, decision,
+                    decided_by, decided_at, created_at, expires_at
+             FROM approval_requests WHERE id = ?1",
+            params![id],
+            row_to_approval,
+        )
+        .optional()?
+        .ok_or_else(|| StoreError::NotFound {
+            entity: "approval",
+            key: id.to_string(),
+        })?;
+    if affected == 0 && row.decision != decision {
+        return Err(StoreError::Integrity(format!(
+            "approval '{id}' already decided as '{}'",
+            row.decision.as_str()
+        )));
+    }
+    Ok(row)
+}
+
+fn row_to_approval(row: &rusqlite::Row<'_>) -> rusqlite::Result<ApprovalRequest> {
+    let act_raw: String = row.get(2)?;
+    let action_type = act_raw.parse::<ApprovalActionType>().map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(e))
+    })?;
+    let dec_raw: String = row.get(4)?;
+    let decision = dec_raw.parse::<ApprovalDecision>().map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(e))
+    })?;
+    Ok(ApprovalRequest {
+        id: row.get(0)?,
+        session_id: row.get(1)?,
+        action_type,
+        payload_summary: row.get(3)?,
+        decision,
+        decided_by: row.get(5)?,
+        decided_at: row.get(6)?,
+        created_at: row.get(7)?,
+        expires_at: row.get(8)?,
+    })
 }
 
 fn row_to_project(row: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {

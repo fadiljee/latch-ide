@@ -17,7 +17,10 @@ use axum::{Json, Router};
 use base64::engine::general_purpose::{STANDARD as BASE64_STD, URL_SAFE_NO_PAD};
 use base64::Engine as _;
 use latch_core::id::{ms_to_rfc3339, now_ms};
-use latch_core::model::{AuditEntry, MergeStrategy, Session, SessionTelemetrySummary};
+use latch_core::model::{
+    ApprovalActionType, ApprovalDecision, AuditEntry, MergeStrategy, Session,
+    SessionTelemetrySummary,
+};
 use latch_core::protocol::{
     ProjectAddParams, SessionDiffParams, SessionListParams, SessionMergeParams, SessionRunParams,
 };
@@ -189,6 +192,14 @@ pub async fn start_http_server(
             get(handle_session_telemetry),
         )
         .route("/api/v1/sessions/{id}/screen", get(handle_session_screen))
+        .route(
+            "/api/v1/approvals",
+            get(handle_list_approvals).post(handle_create_approval),
+        )
+        .route(
+            "/api/v1/approvals/{id}/decision",
+            post(handle_decide_approval),
+        )
         .route("/api/v1/ws", get(handle_events_ws))
         .route("/api/v1/sessions/{id}/pty", get(handle_pty_ws))
         .fallback(get(handle_static_asset))
@@ -727,6 +738,113 @@ async fn handle_session_screen(
     }
 }
 
+#[derive(Deserialize)]
+struct ApprovalListQuery {
+    status: Option<String>,
+}
+
+async fn handle_list_approvals(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Query(q): Query<ApprovalListQuery>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+        return resp;
+    }
+    let filter = match q.status {
+        Some(ref s) => match s.parse::<ApprovalDecision>() {
+            Ok(d) => Some(d),
+            Err(_) => {
+                return api_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "invalid approval status filter",
+                );
+            }
+        },
+        None => None,
+    };
+    match state.manager.list_approvals(filter).await {
+        Ok(list) => Json(list).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+#[derive(Deserialize)]
+struct CreateApprovalBody {
+    session_id: String,
+    action_type: ApprovalActionType,
+    payload_summary: String,
+    #[serde(default)]
+    wait: bool,
+    #[serde(default = "default_approval_timeout")]
+    timeout_secs: u64,
+}
+
+fn default_approval_timeout() -> u64 {
+    300
+}
+
+async fn handle_create_approval(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(body): Json<CreateApprovalBody>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+        return resp;
+    }
+    match state
+        .manager
+        .create_approval(
+            &body.session_id,
+            body.action_type,
+            body.payload_summary,
+            body.timeout_secs,
+            body.wait,
+        )
+        .await
+    {
+        Ok(req) => (StatusCode::CREATED, Json(req)).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+#[derive(Deserialize)]
+struct DecideApprovalBody {
+    decision: ApprovalDecision,
+    decided_by: Option<String>,
+}
+
+async fn handle_decide_approval(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<DecideApprovalBody>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+        return resp;
+    }
+    if body.decision == ApprovalDecision::Pending {
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "decision must be 'approved' or 'denied'",
+        );
+    }
+    let actor = body.decided_by.as_deref().unwrap_or("web");
+    match state
+        .manager
+        .decide_approval(&id, body.decision, actor)
+        .await
+    {
+        Ok(updated) => Json(updated).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
 fn extract_ws_subprotocol_token(headers: &HeaderMap) -> Option<String> {
     let raw = headers
         .get(header::SEC_WEBSOCKET_PROTOCOL)
@@ -840,6 +958,28 @@ async fn handle_events_ws(
                                 "session_id": session_id,
                                 "from": from.as_str(),
                                 "to": to.as_str()
+                            });
+                            if socket.send(Message::Text(msg.to_string().into())).await.is_err() {
+                                break;
+                            }
+                        }
+                        Ok(DaemonEvent::ApprovalRequested { approval }) => {
+                            let seq = state.event_seq.fetch_add(1, Ordering::Relaxed);
+                            let msg = json!({
+                                "seq": seq,
+                                "type": "approval.requested",
+                                "approval": approval
+                            });
+                            if socket.send(Message::Text(msg.to_string().into())).await.is_err() {
+                                break;
+                            }
+                        }
+                        Ok(DaemonEvent::ApprovalDecided { approval }) => {
+                            let seq = state.event_seq.fetch_add(1, Ordering::Relaxed);
+                            let msg = json!({
+                                "seq": seq,
+                                "type": "approval.decided",
+                                "approval": approval
                             });
                             if socket.send(Message::Text(msg.to_string().into())).await.is_err() {
                                 break;

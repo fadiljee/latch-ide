@@ -15,7 +15,7 @@
 
 <p align="center">
   <a href="https://github.com/fadiljee/latch-ide/actions/workflows/ci.yml"><img src="https://github.com/fadiljee/latch-ide/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
-  <a href="https://github.com/fadiljee/latch-ide/releases/tag/v0.2.0"><img src="https://img.shields.io/badge/release-v0.2.0-blue" alt="Release: v0.2.0" /></a>
+  <a href="https://github.com/fadiljee/latch-ide/releases/tag/v0.3.0"><img src="https://img.shields.io/badge/release-v0.3.0-blue" alt="Release: v0.3.0" /></a>
   <img src="https://img.shields.io/badge/rust-1.85%2B-orange" alt="Rust 1.85+" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-green" alt="License: Apache-2.0" /></a>
   <a href="CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen" alt="PRs Welcome" /></a>
@@ -40,7 +40,7 @@ Running multiple AI coding CLIs (`claude`, `codex`, `opencode`, `gemini`, or cus
 | **TUI & CLI** | Full `clap` CLI (`daemon`, `project`, `run`, `session`, `config`, `tui`) & interactive `ratatui` TUI with ANSI terminal pane, diff view, and merge/kill/discard confirmation modals | `v0.1` | Done |
 | **Workbench Scaffold** | `web/` foundation (Vite + React + strict TypeScript + Tailwind CSS + Zustand + `id`/`en` i18n + ESLint `jsx-a11y` + Vitest + gzipped bundle-size gate) | `I0` | Done |
 | **LLM Proxy & Web PWA** | Local HTTP/SSE reverse proxy (`rustls`), token/cost telemetry (`pricing.toml`), automated circuit breaker (`< 1 s`), REST/WS + embedded Web PWA (`rust-embed`, CSP), HMAC webhooks & SSH remote tunnel | `v0.2` | Done |
-| **OS Sandbox & Approvals** | Linux Landlock filesystem jail, sensitive path denylist, interactive approval gates | `v0.3` / `I2` | Planned |
+| **OS Sandbox & Approvals** | Linux Landlock filesystem jail (`ABI v1–v5`), toolchain presets, sensitive path denylist, egress domain allowlist, PATH shim, interactive Approval Gate (REST/WS + Web Inbox) | `v0.3` | Done |
 | **DAG Pipelines & Full IDE** | Declarative `workflow.toml` DAG, retry gates, fan-out arena, idle hibernation, CodeMirror 6 editor, fuzzy/regex search, sandboxed LSP | `v1.0`–`v1.2` | Planned |
 
 ## Benchmark Results (`v0.2`)

@@ -84,6 +84,7 @@ pub struct ProxyRegistry {
     sessions_by_token: Arc<RwLock<HashMap<String, Arc<RegisteredSession>>>>,
     token_by_session: Arc<RwLock<HashMap<String, String>>>,
     upstreams: Arc<RwLock<HashMap<String, String>>>,
+    allowed_domains: Arc<RwLock<Vec<String>>>,
 }
 
 impl Default for ProxyRegistry {
@@ -102,6 +103,7 @@ impl Default for ProxyRegistry {
             sessions_by_token: Arc::new(RwLock::new(HashMap::new())),
             token_by_session: Arc::new(RwLock::new(HashMap::new())),
             upstreams: Arc::new(RwLock::new(upstreams)),
+            allowed_domains: Arc::new(RwLock::new(Vec::new())),
         }
     }
 }
@@ -110,6 +112,29 @@ impl ProxyRegistry {
     /// Membuat registri baru dengan URL upstream standar (OpenAI, Anthropic, Google).
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Menetapkan allowlist domain egress kooperatif (kosong = izinkan upstream terdaftar bawaan) (`T-307`).
+    pub async fn set_allowed_domains(&self, domains: Vec<String>) {
+        let normalized = domains
+            .into_iter()
+            .map(|d| d.trim().to_ascii_lowercase())
+            .filter(|d| !d.is_empty())
+            .collect();
+        *self.allowed_domains.write().await = normalized;
+    }
+
+    async fn is_upstream_domain_allowed(&self, upstream_url: &str) -> bool {
+        let allow = self.allowed_domains.read().await;
+        if allow.is_empty() {
+            return true;
+        }
+        let Some(host) = extract_url_host(upstream_url) else {
+            return false;
+        };
+        allow
+            .iter()
+            .any(|allowed| host == *allowed || host.ends_with(&format!(".{allowed}")))
     }
 
     /// Menimpa atau mendaftarkan URL upstream untuk satu penyedia (berguna untuk pengujian/gateway lokal).
@@ -304,6 +329,17 @@ async fn forward_request(
     let Some(upstream_base) = state.registry.upstream_for(&normalized_provider).await else {
         return (StatusCode::BAD_GATEWAY, "unknown LLM provider").into_response();
     };
+    if !state
+        .registry
+        .is_upstream_domain_allowed(&upstream_base)
+        .await
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            "upstream domain blocked by egress allowlist",
+        )
+            .into_response();
+    }
 
     let query = req.uri().query().map(str::to_string);
     let method = req.method().clone();
@@ -484,6 +520,20 @@ fn is_hop_by_hop_header(name: &HeaderName) -> bool {
             | "upgrade"
             | "content-length"
     )
+}
+
+fn extract_url_host(url: &str) -> Option<String> {
+    let after_scheme = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))?;
+    let authority = after_scheme.split('/').next()?;
+    let host_port = authority.rsplit('@').next()?;
+    let host = if host_port.starts_with('[') {
+        host_port.split(']').next()?.trim_start_matches('[')
+    } else {
+        host_port.split(':').next()?
+    };
+    Some(host.to_ascii_lowercase())
 }
 
 fn filter_response_headers(headers: &HeaderMap) -> HeaderMap {

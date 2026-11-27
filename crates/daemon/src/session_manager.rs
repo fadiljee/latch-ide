@@ -1,6 +1,6 @@
 //! Pengelola siklus hidup sesi, worktree, PTY, dan rekonsiliasi startup (T-104, T-131).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -9,8 +9,9 @@ use std::time::Duration;
 use latch_core::config::{AgentsConfig, LatchConfig, RuntimePaths};
 use latch_core::id::{new_id, now_ms, short_id};
 use latch_core::model::{
-    AuditEntry, MergeCheckResult, MergeStrategy, Project, ProxyMode, Session, SessionDiff,
-    SessionStatus, SessionTelemetrySummary, TelemetryRecord, TripReason,
+    ApprovalActionType, ApprovalDecision, ApprovalRequest, AuditEntry, MergeCheckResult,
+    MergeStrategy, Project, ProxyMode, Session, SessionDiff, SessionStatus,
+    SessionTelemetrySummary, TelemetryRecord, TripReason,
 };
 use latch_core::pricing::{load_pricing_table, PricingTable};
 use latch_core::protocol::{
@@ -31,7 +32,7 @@ use latch_pty_pool::{PtyError, PtyPool, PtySpawnRequest};
 use latch_sandbox::build_session_policy;
 use latch_store::{StoreError, StoreHandle};
 use thiserror::Error;
-use tokio::sync::{broadcast, mpsc, Notify, RwLock};
+use tokio::sync::{broadcast, mpsc, oneshot, Mutex as AsyncMutex, Notify, RwLock};
 use tracing::{info, warn};
 
 const EXIT_EVENT_CAP: usize = 64;
@@ -86,6 +87,10 @@ pub enum DaemonEvent {
         from: SessionStatus,
         to: SessionStatus,
     },
+    /// Permintaan approval baru menunggu keputusan manusia.
+    ApprovalRequested { approval: ApprovalRequest },
+    /// Permintaan approval telah diputuskan.
+    ApprovalDecided { approval: ApprovalRequest },
 }
 
 /// Koordinator state sesi daemon (`store` + `git-engine` + `pty-pool` + `sandbox` + `proxy`).
@@ -99,6 +104,7 @@ pub struct SessionManager {
     sandbox: Arc<dyn SandboxProvider>,
     proxy_registry: ProxyRegistry,
     proxy_handle: Arc<ProxyServerHandle>,
+    approval_waiters: Arc<AsyncMutex<HashMap<String, oneshot::Sender<ApprovalRequest>>>>,
     exit_tx: mpsc::Sender<PtyExitEvent>,
     trip_tx: mpsc::Sender<TripEvent>,
     events_tx: broadcast::Sender<DaemonEvent>,
@@ -148,6 +154,7 @@ impl SessionManager {
             sandbox,
             proxy_registry,
             proxy_handle: Arc::new(proxy_handle),
+            approval_waiters: Arc::new(AsyncMutex::new(HashMap::new())),
             exit_tx,
             trip_tx,
             events_tx,
@@ -198,6 +205,130 @@ impl SessionManager {
     /// Mengambil entri audit terbaru.
     pub async fn list_audit(&self, limit: usize) -> Result<Vec<AuditEntry>, ManagerError> {
         Ok(self.store.list_audit(limit).await?)
+    }
+
+    /// Membuat permintaan approval baru (`T-308`); bila `wait == true`, menunggu keputusan atau timeout (default deny).
+    pub async fn create_approval(
+        &self,
+        session_id: &str,
+        action_type: ApprovalActionType,
+        payload_summary: String,
+        timeout_secs: u64,
+        wait: bool,
+    ) -> Result<ApprovalRequest, ManagerError> {
+        let ses = self.store.get_session(session_id).await?;
+        let now = now_ms();
+        let expires_at = if timeout_secs > 0 {
+            Some(now + i64::try_from(timeout_secs.saturating_mul(1000)).unwrap_or(300_000))
+        } else {
+            None
+        };
+        let req = ApprovalRequest {
+            id: new_id(),
+            session_id: ses.id.clone(),
+            action_type,
+            payload_summary,
+            decision: ApprovalDecision::Pending,
+            decided_by: None,
+            decided_at: None,
+            created_at: now,
+            expires_at,
+        };
+        let saved = self.store.insert_approval(req).await?;
+        if ses.status == SessionStatus::Running {
+            let _ = self
+                .store
+                .transition_session(
+                    &ses.id,
+                    SessionStatus::WaitingApproval,
+                    None,
+                    None,
+                    None,
+                    false,
+                )
+                .await;
+            let _ = self.events_tx.send(DaemonEvent::SessionStatusChanged {
+                session_id: ses.id.clone(),
+                from: SessionStatus::Running,
+                to: SessionStatus::WaitingApproval,
+            });
+        }
+        let _ = self.events_tx.send(DaemonEvent::ApprovalRequested {
+            approval: saved.clone(),
+        });
+
+        if !wait {
+            return Ok(saved);
+        }
+
+        let (tx, rx) = oneshot::channel();
+        self.approval_waiters
+            .lock()
+            .await
+            .insert(saved.id.clone(), tx);
+
+        let wait_dur = Duration::from_secs(timeout_secs.max(1));
+        match tokio::time::timeout(wait_dur, rx).await {
+            Ok(Ok(decided)) => Ok(decided),
+            _ => {
+                self.approval_waiters.lock().await.remove(&saved.id);
+                self.decide_approval(&saved.id, ApprovalDecision::Denied, "timeout")
+                    .await
+            }
+        }
+    }
+
+    /// Mengambil daftar permintaan approval dengan filter status opsional.
+    pub async fn list_approvals(
+        &self,
+        decision: Option<ApprovalDecision>,
+    ) -> Result<Vec<ApprovalRequest>, ManagerError> {
+        Ok(self.store.list_approvals(decision).await?)
+    }
+
+    /// Memutuskan permintaan approval (`approved` / `denied`), membangunkan waiter < 50 ms, dan menulis audit.
+    pub async fn decide_approval(
+        &self,
+        id: &str,
+        decision: ApprovalDecision,
+        decided_by: &str,
+    ) -> Result<ApprovalRequest, ManagerError> {
+        let updated = self.store.decide_approval(id, decision, decided_by).await?;
+        if let Ok(ses) = self.store.get_session(&updated.session_id).await {
+            if ses.status == SessionStatus::WaitingApproval {
+                let _ = self
+                    .store
+                    .transition_session(&ses.id, SessionStatus::Running, None, None, None, false)
+                    .await;
+                let _ = self.events_tx.send(DaemonEvent::SessionStatusChanged {
+                    session_id: ses.id,
+                    from: SessionStatus::WaitingApproval,
+                    to: SessionStatus::Running,
+                });
+            }
+        }
+        let _ = self
+            .store
+            .insert_audit(AuditEntry {
+                id: None,
+                session_id: Some(updated.session_id.clone()),
+                kind: "approval".to_string(),
+                detail: format!(
+                    "id={} decision={} by={}",
+                    updated.id,
+                    updated.decision.as_str(),
+                    decided_by
+                ),
+                timestamp: now_ms(),
+            })
+            .await;
+        if let Some(waiter) = self.approval_waiters.lock().await.remove(&updated.id) {
+            let _ = waiter.send(updated.clone());
+        }
+        let _ = self.events_tx.send(DaemonEvent::ApprovalDecided {
+            approval: updated.clone(),
+        });
+        Ok(updated)
     }
 
     /// Menghentikan paksa sesi akibat circuit breaker (`T-208`) dalam < 1 detik.

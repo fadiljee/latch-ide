@@ -75,3 +75,15 @@ export interface MergeCheckResult {
   clean: boolean;
   conflicts: string[];
 }
+
+export interface ApprovalRequest {
+  id: string;
+  session_id: string;
+  action_type: "fs_write" | "shell_exec" | "net_egress";
+  payload_summary: string;
+  decision: "pending" | "approved" | "denied";
+  decided_by: string | null;
+  decided_at: number | null;
+  created_at: number;
+  expires_at: number | null;
+}

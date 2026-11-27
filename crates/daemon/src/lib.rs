@@ -6,6 +6,7 @@ pub mod http_server;
 pub mod logging;
 pub mod notify;
 pub mod session_manager;
+pub mod shim;
 pub mod uds_server;
 
 use std::net::SocketAddr;

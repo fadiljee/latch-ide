@@ -1,7 +1,13 @@
 import { useEffect, useState } from "react";
 import { DiffViewer } from "../features/diff/DiffViewer";
-import { connectEventsSocket, fetchSessionDiff, fetchSessions } from "../lib/api/client";
-import type { Session, SessionDiff } from "../lib/api/types";
+import {
+  connectEventsSocket,
+  decideApproval,
+  fetchPendingApprovals,
+  fetchSessionDiff,
+  fetchSessions,
+} from "../lib/api/client";
+import type { ApprovalRequest, Session, SessionDiff } from "../lib/api/types";
 import { CATALOGS } from "../lib/i18n/catalog";
 import { useWorkbenchStore } from "../lib/store/useWorkbenchStore";
 
@@ -23,6 +29,7 @@ export function App() {
   });
   const [activeToken, setActiveToken] = useState(tokenInput);
   const [activeDiff, setActiveDiff] = useState<SessionDiff | null>(null);
+  const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
@@ -42,6 +49,15 @@ export function App() {
           if (!cancelled) {
             setErrorMsg(err instanceof Error ? err.message : "Failed to load sessions");
           }
+        });
+      void fetchPendingApprovals(activeToken)
+        .then((list) => {
+          if (!cancelled) {
+            setApprovals(list);
+          }
+        })
+        .catch(() => {
+          // Abaikan bila endpoint belum tersedia
         });
     };
     refresh();
@@ -209,6 +225,56 @@ export function App() {
             ))}
           </div>
         </section>
+
+        {approvals.length > 0 ? (
+          <section
+            aria-label="Pending Approvals"
+            className="mt-6 rounded-lg border border-amber-800/70 bg-amber-950/30 p-4"
+          >
+            <h2 className="mb-3 text-sm font-semibold text-amber-200">
+              {t.columns.waitingApproval} ({approvals.length})
+            </h2>
+            <ul className="space-y-2">
+              {approvals.map((req) => (
+                <li
+                  key={req.id}
+                  className="flex flex-wrap items-center justify-between gap-2 rounded border border-slate-800 bg-slate-950/80 p-3 text-xs"
+                >
+                  <div className="min-w-0 flex-1">
+                    <span className="mr-2 rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[11px] text-amber-300">
+                      {req.action_type}
+                    </span>
+                    <span className="font-mono text-slate-200">{req.payload_summary}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void decideApproval(activeToken, req.id, "approved").then(() => {
+                          setApprovals((prev) => prev.filter((item) => item.id !== req.id));
+                        });
+                      }}
+                      className="rounded bg-emerald-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-emerald-500"
+                    >
+                      Approve
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void decideApproval(activeToken, req.id, "denied").then(() => {
+                          setApprovals((prev) => prev.filter((item) => item.id !== req.id));
+                        });
+                      }}
+                      className="rounded bg-rose-700 px-2.5 py-1 text-xs font-medium text-white hover:bg-rose-600"
+                    >
+                      Deny
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
 
         {activeDiff ? (
           <DiffViewer
