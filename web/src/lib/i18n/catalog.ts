@@ -19,6 +19,40 @@ export interface Catalog {
     waitingApproval: string;
     readyReview: string;
     attention: string;
+    idle: string;
+  };
+  nav: {
+    sessions: string;
+    pipelines: string;
+    approvals: string;
+    newSession: string;
+    searchPlaceholder: string;
+    allProjects: string;
+    sessionsOnly: string;
+    byProject: string;
+    terminalTab: string;
+    diffTab: string;
+    sendPlaceholder: string;
+    noSessionSelected: string;
+    selectOrCreate: string;
+    pause: string;
+    resume: string;
+    hibernate: string;
+    merge: string;
+    kill: string;
+    discard: string;
+    createTitle: string;
+    projectLabel: string;
+    profileLabel: string;
+    taskLabel: string;
+    taskPlaceholder: string;
+    launch: string;
+    cancel: string;
+    addRepoPlaceholder: string;
+    addRepoButton: string;
+    approve: string;
+    deny: string;
+    noApprovals: string;
   };
   pipelines: {
     heading: string;
@@ -57,9 +91,43 @@ export const CATALOGS: Record<Locale, Catalog> = {
     viewDiff: "Diff",
     columns: {
       running: "Berjalan",
-      waitingApproval: "Butuh Persetujuan",
-      readyReview: "Siap Review",
-      attention: "Perlu Perhatian",
+      waitingApproval: "Menunggu Anda",
+      readyReview: "Selesai",
+      attention: "Gagal",
+      idle: "Idle",
+    },
+    nav: {
+      sessions: "Sesi",
+      pipelines: "Pipeline & Arena",
+      approvals: "Persetujuan",
+      newSession: "+ Sesi baru",
+      searchPlaceholder: "Cari sesi, branch, atau tugas…",
+      allProjects: "Semua proyek",
+      sessionsOnly: "Daftar sesi",
+      byProject: "Per proyek",
+      terminalTab: "Terminal",
+      diffTab: "Diff",
+      sendPlaceholder: "Kirim input atau perintah ke sesi…",
+      noSessionSelected: "Pilih sesi di sidebar atau buat sesi baru",
+      selectOrCreate: "Setiap sesi berjalan terisolasi di git worktree sendiri.",
+      pause: "Jeda",
+      resume: "Lanjut",
+      hibernate: "Hibernasi",
+      merge: "Merge",
+      kill: "Hentikan",
+      discard: "Buang",
+      createTitle: "Sesi Agen Baru",
+      projectLabel: "Proyek",
+      profileLabel: "Profil Agen",
+      taskLabel: "Tugas / Prompt",
+      taskPlaceholder: "Tambahkan filter tag beserta unit test...",
+      launch: "Jalankan Sesi",
+      cancel: "Batal",
+      addRepoPlaceholder: "/path/ke/repo-git",
+      addRepoButton: "Tambah Repo",
+      approve: "Setujui",
+      deny: "Tolak",
+      noApprovals: "Tidak ada permintaan persetujuan tertunda.",
     },
     pipelines: {
       heading: "Pipeline DAG & Arena",
@@ -95,10 +163,44 @@ export const CATALOGS: Record<Locale, Catalog> = {
     closeLabel: "Close",
     viewDiff: "Diff",
     columns: {
-      running: "Running",
-      waitingApproval: "Waiting Approval",
-      readyReview: "Ready for Review",
-      attention: "Needs Attention",
+      running: "Working",
+      waitingApproval: "Waiting on you",
+      readyReview: "Done",
+      attention: "Failed",
+      idle: "Idle",
+    },
+    nav: {
+      sessions: "Sessions",
+      pipelines: "Pipelines & Arena",
+      approvals: "Approvals",
+      newSession: "+ New session",
+      searchPlaceholder: "Search sessions, branches, and tasks…",
+      allProjects: "All projects",
+      sessionsOnly: "Sessions only",
+      byProject: "By project",
+      terminalTab: "Terminal",
+      diffTab: "Diff",
+      sendPlaceholder: "Send input or command to session…",
+      noSessionSelected: "Select a session from the sidebar or start a new one",
+      selectOrCreate: "Each session runs isolated in its own git worktree.",
+      pause: "Pause",
+      resume: "Resume",
+      hibernate: "Hibernate",
+      merge: "Merge",
+      kill: "Kill",
+      discard: "Discard",
+      createTitle: "New Agent Session",
+      projectLabel: "Project",
+      profileLabel: "Agent Profile",
+      taskLabel: "Task / Prompt",
+      taskPlaceholder: "Add a tag filter with unit tests...",
+      launch: "Launch Session",
+      cancel: "Cancel",
+      addRepoPlaceholder: "/path/to/git-repo",
+      addRepoButton: "Add Repo",
+      approve: "Approve",
+      deny: "Deny",
+      noApprovals: "No pending approval requests.",
     },
     pipelines: {
       heading: "DAG Pipelines & Arena",

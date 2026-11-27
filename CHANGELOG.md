@@ -4,6 +4,13 @@ Format mengikuti [Keep a Changelog](https://keepachangelog.com/id-ID/1.1.0/) dan
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-27
+
+### Added
+- **Redesign UI Desktop (`web/`) & Shell Native Tauri v2 (`desktop/`):**
+  - Tata letak desktop 3-panel modern: top bar (pemilih proyek, tab `Sessions`/`Pipelines & Arena`/`Approvals`, pencarian cepat `Ctrl+K`, tombol `+ New session`), sidebar kiri dikelompokkan per status (*Waiting on you*, *Working*, *Failed*, *Done*, *Idle*) dengan toggle *Sessions only / By project*, stage tengah **Live Interactive PTY Terminal** (`/api/v1/sessions/{id}/pty` + input bar `>`) & tab **Diff** inline, serta floating action rail di kanan. Total bundel gzip tetap **86,2 KiB** (batas 600 KiB).
+  - Paket terpisah `desktop/` berbasis **Tauri v2** (WebView OS, tanpa Electron/Chromium) yang otomatis menyalakan `latch-daemon` dan menyuntikkan token lokal (`window.__LATCH_TOKEN__`) langsung ke WebView untuk pengalaman desktop app zero-setup.
+
 ## [1.0.1] - 2026-11-27
 
 ### Added
