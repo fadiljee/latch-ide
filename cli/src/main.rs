@@ -28,7 +28,7 @@ use latch_core::protocol::{
 )]
 struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
@@ -82,6 +82,9 @@ enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Buka antarmuka Web Workbench di browser (auto-start daemon).
+    #[command(alias = "open")]
+    Web,
     /// Buka antarmuka terminal interaktif (TUI).
     Tui,
 }
@@ -230,7 +233,8 @@ fn main() -> anyhow::Result<()> {
     }
 
     let cli = Cli::parse();
-    match cli.command {
+    let command = cli.command.unwrap_or(Commands::Tui);
+    match command {
         Commands::Daemon {
             action: DaemonCmd::Start { foreground: true },
         } => latch_daemon::run_foreground(paths),
@@ -259,8 +263,36 @@ fn main() -> anyhow::Result<()> {
             local_port,
             remote_port,
         } => run_remote_tunnel(&target, local_port, remote_port),
+        Commands::Web => run_open_web(&paths),
         other => run_async_client(paths, other),
     }
+}
+
+fn ensure_daemon_running(paths: &RuntimePaths) -> anyhow::Result<()> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let client = UdsClient::new(&paths.socket_path);
+    if rt.block_on(client.health()).is_ok() {
+        return Ok(());
+    }
+    spawn_background_daemon(paths)
+}
+
+fn run_open_web(paths: &RuntimePaths) -> anyhow::Result<()> {
+    ensure_daemon_running(paths)?;
+    let cfg = load_latch_config(&paths.config_file()).unwrap_or_default();
+    let tok = latch_daemon::http_server::ensure_or_load_token(&paths.token_file())?;
+    let url = format!("http://{}", cfg.daemon.http_bind);
+    println!("Latch Workbench : {url}");
+    println!("Bearer Token    : {tok}");
+    let _ = Command::new("xdg-open")
+        .arg(&url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+    Ok(())
 }
 
 fn spawn_background_daemon(paths: &RuntimePaths) -> anyhow::Result<()> {
@@ -339,6 +371,9 @@ fn run_remote_tunnel(target: &str, local_port: u16, remote_port: u16) -> anyhow:
 }
 
 fn run_async_client(paths: RuntimePaths, cmd: Commands) -> anyhow::Result<()> {
+    if !matches!(cmd, Commands::Daemon { .. }) {
+        ensure_daemon_running(&paths)?;
+    }
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .enable_all()
@@ -434,6 +469,18 @@ fn run_async_client(paths: RuntimePaths, cmd: Commands) -> anyhow::Result<()> {
                 );
             }
             Commands::Tui => {
+                // Auto-register repositori Git di direktori saat ini bila belum terdaftar (zero-setup).
+                if let Ok(cwd) = std::env::current_dir() {
+                    if let Ok(abs) = std::fs::canonicalize(&cwd) {
+                        let _ = client
+                            .project_add(&ProjectAddParams {
+                                repo_path: abs.to_string_lossy().to_string(),
+                                name: None,
+                                default_branch: None,
+                            })
+                            .await;
+                    }
+                }
                 latch_tui::run_tui(paths.socket_path).await?;
             }
             Commands::Daemon {
@@ -441,7 +488,8 @@ fn run_async_client(paths: RuntimePaths, cmd: Commands) -> anyhow::Result<()> {
             }
             | Commands::Config { .. }
             | Commands::Token { .. }
-            | Commands::Remote { .. } => {}
+            | Commands::Remote { .. }
+            | Commands::Web => {}
         }
         Ok(())
     })

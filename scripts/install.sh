@@ -92,10 +92,32 @@ ln -sf "${INSTALL_DIR}/latch" "${INSTALL_DIR}/latchd"
 log "Berhasil dipasang: ${INSTALL_DIR}/latch (dan symlink latchd)"
 "${INSTALL_DIR}/latch" --version || true
 
+# Tambahkan INSTALL_DIR ke PATH shell secara idempoten bila belum terdaftar
 case ":${PATH}:" in
   *":${INSTALL_DIR}:"*) ;;
   *)
-    log "Tambahkan ke PATH Anda agar bisa langsung menjalankan 'latch':"
-    printf '  export PATH="%s:$PATH"\n' "$INSTALL_DIR"
+    PATH_LINE="export PATH=\"${INSTALL_DIR}:\$PATH\""
+    UPDATED_RC=""
+    for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
+      if [ -f "$rc" ]; then
+        if ! grep -F "$INSTALL_DIR" "$rc" >/dev/null 2>&1; then
+          printf '\n# Latch CLI\n%s\n' "$PATH_LINE" >> "$rc"
+          UPDATED_RC="${UPDATED_RC} ${rc}"
+        fi
+      fi
+    done
+    if [ -n "$UPDATED_RC" ]; then
+      log "PATH ditambahkan otomatis ke:${UPDATED_RC}"
+      log "Jalankan 'export PATH=\"${INSTALL_DIR}:\$PATH\"' atau buka ulang terminal."
+    else
+      log "Tambahkan ke PATH Anda: ${PATH_LINE}"
+    fi
     ;;
 esac
+
+# Auto-start daemon agar langsung siap dipakai tanpa setup manual (lewati dengan LATCH_NO_START=1)
+if [ "${LATCH_NO_START:-0}" != "1" ]; then
+  "${INSTALL_DIR}/latch" daemon start >/dev/null 2>&1 || true
+fi
+
+log "Siap dipakai! Jalankan 'latch' (TUI) atau 'latch web' (Web Workbench di http://127.0.0.1:7878)."

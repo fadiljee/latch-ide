@@ -354,6 +354,27 @@ impl AgentsConfig {
                 extra_ro: Vec::new(),
             },
         );
+        for (name, cmd, provider) in [
+            ("claude", "claude", "anthropic"),
+            ("codex", "codex", "openai"),
+            ("gemini", "gemini", "google"),
+            ("opencode", "opencode", "openai"),
+        ] {
+            profiles.insert(
+                name.to_string(),
+                AgentProfile {
+                    command: cmd.to_string(),
+                    args: Vec::new(),
+                    env: BTreeMap::new(),
+                    pass_env: Vec::new(),
+                    proxy_mode: ProxyMode::Injected,
+                    proxy_provider: Some(provider.to_string()),
+                    resume_args: Vec::new(),
+                    extra_rw: Vec::new(),
+                    extra_ro: Vec::new(),
+                },
+            );
+        }
         Self { profiles }
     }
 }

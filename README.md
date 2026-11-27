@@ -15,7 +15,7 @@
 
 <p align="center">
   <a href="https://github.com/fadiljee/latch-ide/actions/workflows/ci.yml"><img src="https://github.com/fadiljee/latch-ide/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
-  <a href="https://github.com/fadiljee/latch-ide/releases/tag/v1.0.0"><img src="https://img.shields.io/badge/release-v1.0.0-blue" alt="Release: v1.0.0" /></a>
+  <a href="https://github.com/fadiljee/latch-ide/releases/tag/v1.0.1"><img src="https://img.shields.io/badge/release-v1.0.1-blue" alt="Release: v1.0.1" /></a>
   <img src="https://img.shields.io/badge/rust-1.85%2B-orange" alt="Rust 1.85+" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-green" alt="License: Apache-2.0" /></a>
   <a href="CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen" alt="PRs Welcome" /></a>
@@ -82,13 +82,17 @@ latch-ide/
 
 ## Quick Start
 
-### Install via `curl` (Linux x86_64 static musl binary)
+### Install via `curl` — Zero Setup (Linux x86_64 static musl binary)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/fadiljee/latch-ide/main/scripts/install.sh | sh
+
+# Ready immediately — no manual daemon/config setup needed:
+latch        # auto-starts daemon, registers current Git repo, opens TUI
+latch web    # opens Web Workbench at http://127.0.0.1:7878
 ```
 
-> Installs `latch` (and `latchd` symlink) to `~/.local/bin` with SHA-256 verification. Override with `LATCH_VERSION=v1.0.0` or `LATCH_INSTALL_DIR=/usr/local/bin`.
+> Installs `latch` (and `latchd` symlink) to `~/.local/bin` with SHA-256 verification, updates your shell `PATH`, and starts the daemon automatically. Built-in profiles (`claude`, `codex`, `gemini`, `opencode`, `shell`) work out of the box. Override with `LATCH_VERSION=v1.0.1`, `LATCH_INSTALL_DIR=/usr/local/bin`, or `LATCH_NO_START=1`.
 
 ### Build from Source
 

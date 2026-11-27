@@ -4,6 +4,16 @@ Format mengikuti [Keep a Changelog](https://keepachangelog.com/id-ID/1.1.0/) dan
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-11-27
+
+### Added
+- **Zero-Setup UX**:
+  - `latch` tanpa argumen otomatis menyalakan daemon, mendaftarkan repositori Git di direktori saat ini, dan langsung membuka TUI.
+  - Subcommand `latch web` (alias `latch open`) otomatis menyalakan daemon, menampilkan URL & bearer token, dan membuka Web Workbench di browser.
+  - Seluruh perintah klien (`latch run`, `session`, `pipeline`, `project`, `gc`, `tui`) otomatis menyalakan daemon di latar belakang bila belum berjalan.
+  - Profil agen bawaan (`claude`, `codex`, `gemini`, `opencode`, `shell`, `sleeper`) aktif langsung tanpa perlu membuat `agents.toml` manual.
+  - `scripts/install.sh` otomatis menambahkan `~/.local/bin` ke `~/.bashrc`/`~/.zshrc` (idempoten) dan menyalakan daemon saat instalasi selesai.
+
 ## [1.0.0] - 2026-11-27
 
 ### Added
