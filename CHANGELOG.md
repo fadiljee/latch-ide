@@ -4,6 +4,18 @@ Format mengikuti [Keep a Changelog](https://keepachangelog.com/id-ID/1.1.0/) dan
 
 ## [Unreleased]
 
+### Added
+- **Fase 2 — Jalur Proxy LLM & Circuit Breaker (`T-201`–`T-210`):**
+  - `latch-core`: parser & tabel harga `pricing.toml` (`PricingTable`) dengan pencocokan prefiks model serta model ringkasan `SessionTelemetrySummary`.
+  - `latch-store`: penulisan telemetri batch transaksional (`insert_telemetry_batch`), `list_telemetry`, dan agregat biaya/token/error per sesi dengan redaksi rahasia otomatis.
+  - `latch-proxy`: server reverse proxy HTTP/SSE loopback (`axum` + `reqwest`/`rustls`) pada rute `/s/<token>/<provider>/...` dengan token 256-bit yang dicabut otomatis saat sesi berakhir, penerusan header otorisasi tanpa pencatatan, tee parser OpenAI/Anthropic/Google, detektor loop error/tool-call (`SHA-256`), heuristik mode bypass, dan circuit breaker anggaran + error beruntun.
+  - `latch-daemon` & `latch-pty-pool`: injeksi `OPENAI_BASE_URL`/`ANTHROPIC_BASE_URL`/`GEMINI_API_BASE_URL` pada mode `injected`, dukungan penuh mode `bypass`, batch writer telemetri non-blocking, dan `trip_session` (< 1 detik) beserta audit log.
+  - Pengujian integrasi end-to-end, benchmark overhead latensi proxy (`≤ 2 ms`), dan tes kanari rahasia yang memindai berkas SQLite mentah serta log daemon (`NFR-05`).
+- **Fase 2 — Jalur Web, REST/WS, Notifikasi & Remote (`T-220`–`T-227`):**
+  - `latch-daemon`: server HTTP REST (`/api/v1/*`) + WebSocket (`/api/v1/ws` & `/api/v1/sessions/{id}/pty`) loopback-only dengan bearer token acak 256-bit (`0600`, constant-time compare), pemeriksaan `Origin`, rate-limit gagal auth (`429` + `audit_log`), penyajian aset Web PWA tersemat (`rust-embed`) + header CSP ketat, serta dispatcher notifikasi desktop (`notify-send`) dan webhook bertanda tangan HMAC-SHA256.
+  - `web/`: klien REST/WS dengan autentikasi token non-query, `DiffViewer` side-by-side + unified responsif mobile, `manifest.webmanifest`, dan service worker PWA (`sw.js`).
+  - `latch-cli`: subcommand `latch token show|rotate` dan `latch remote <user@host>` (SSH port forwarding lokal tanpa listener publik).
+
 ## [0.1.0] - 2026-11-27
 
 ### Added

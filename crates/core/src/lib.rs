@@ -4,6 +4,7 @@
 pub mod config;
 pub mod id;
 pub mod model;
+pub mod pricing;
 pub mod protocol;
 pub mod redact;
 pub mod sandbox;

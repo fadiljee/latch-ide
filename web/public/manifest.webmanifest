@@ -1,0 +1,10 @@
+{
+  "name": "Latch Workbench",
+  "short_name": "Latch",
+  "description": "Open-source Rust AI coding-agent orchestrator and Agent IDE Workbench",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#020617",
+  "theme_color": "#020617",
+  "icons": []
+}

@@ -497,6 +497,23 @@ pub struct TelemetryRecord {
     pub timestamp: i64,
 }
 
+/// Ringkasan agregat telemetri proxy untuk satu sesi.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct SessionTelemetrySummary {
+    /// ID sesi terkait.
+    pub session_id: String,
+    /// Jumlah total request LLM tercatat.
+    pub request_count: i64,
+    /// Total token prompt.
+    pub prompt_tokens: i64,
+    /// Total token completion.
+    pub completion_tokens: i64,
+    /// Total estimasi biaya USD.
+    pub estimated_cost_usd: f64,
+    /// Jumlah request yang berakhir error (`http_status >= 400` atau `error_kind IS NOT NULL`).
+    pub error_count: i64,
+}
+
 /// Entri log audit sistem (`DATA_MODEL.md` §3.2).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuditEntry {

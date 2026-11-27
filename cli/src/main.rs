@@ -54,8 +54,32 @@ enum Commands {
         #[command(subcommand)]
         action: ConfigCmd,
     },
+    /// Kelola bearer token autentikasi Web/WS (`0600`).
+    Token {
+        #[command(subcommand)]
+        action: TokenCmd,
+    },
+    /// Buka terowongan SSH lokal ke daemon Latch di host remote (FR-03, tanpa listener publik).
+    Remote {
+        /// Target SSH (mis. `user@devbox` atau `ssh://user@devbox`).
+        target: String,
+        /// Port lokal loopback untuk meneruskan HTTP/WS daemon (bawaan 7878).
+        #[arg(long, default_value_t = 7878)]
+        local_port: u16,
+        /// Port loopback daemon di host remote (bawaan 7878).
+        #[arg(long, default_value_t = 7878)]
+        remote_port: u16,
+    },
     /// Buka antarmuka terminal interaktif (TUI).
     Tui,
+}
+
+#[derive(Subcommand)]
+enum TokenCmd {
+    /// Tampilkan bearer token aktif (membuat baru bila belum ada).
+    Show,
+    /// Buat ulang bearer token 256-bit baru (`0600`).
+    Rotate,
 }
 
 #[derive(Subcommand)]
@@ -172,6 +196,25 @@ fn main() -> anyhow::Result<()> {
         Commands::Config {
             action: ConfigCmd::Check,
         } => run_config_check(&paths),
+        Commands::Token {
+            action: TokenCmd::Show,
+        } => {
+            let tok = latch_daemon::http_server::ensure_or_load_token(&paths.token_file())?;
+            println!("{tok}");
+            Ok(())
+        }
+        Commands::Token {
+            action: TokenCmd::Rotate,
+        } => {
+            let tok = latch_daemon::http_server::rotate_token(&paths.token_file())?;
+            println!("{tok}");
+            Ok(())
+        }
+        Commands::Remote {
+            target,
+            local_port,
+            remote_port,
+        } => run_remote_tunnel(&target, local_port, remote_port),
         other => run_async_client(paths, other),
     }
 }
@@ -233,6 +276,21 @@ fn run_config_check(paths: &RuntimePaths) -> anyhow::Result<()> {
         "  worker_threads={}, max_sessions={}, pty_batch_ms={}ms",
         cfg.daemon.worker_threads, cfg.limits.max_sessions, cfg.limits.pty_batch_ms
     );
+    Ok(())
+}
+
+fn run_remote_tunnel(target: &str, local_port: u16, remote_port: u16) -> anyhow::Result<()> {
+    let host = target.strip_prefix("ssh://").unwrap_or(target);
+    let forward = format!("127.0.0.1:{local_port}:127.0.0.1:{remote_port}");
+    println!("Membuka SSH port forward ke {host} (http://127.0.0.1:{local_port}) ...");
+    println!("Tekan Ctrl-C untuk menutup terowongan.");
+    let status = Command::new("ssh")
+        .args(["-N", "-L", &forward, host])
+        .status()
+        .context("failed spawning ssh client for remote tunnel")?;
+    if !status.success() {
+        anyhow::bail!("ssh tunnel exited with status {status}");
+    }
     Ok(())
 }
 
@@ -324,7 +382,9 @@ fn run_async_client(paths: RuntimePaths, cmd: Commands) -> anyhow::Result<()> {
             Commands::Daemon {
                 action: DaemonCmd::Start { .. },
             }
-            | Commands::Config { .. } => {}
+            | Commands::Config { .. }
+            | Commands::Token { .. }
+            | Commands::Remote { .. } => {}
         }
         Ok(())
     })

@@ -20,7 +20,10 @@ lsp = ["dep:latch-lsp-host"]
 
 [dependencies]
 anyhow = { workspace = true }
+axum = { workspace = true }
 base64 = { workspace = true }
+futures-util = { workspace = true }
+hmac = { workspace = true }
 latch-agent-proto = { workspace = true, optional = true }
 latch-core = { workspace = true }
 latch-dag = { workspace = true }
@@ -34,8 +37,13 @@ latch-search = { workspace = true, optional = true }
 latch-store = { workspace = true }
 latch-workbench-api = { workspace = true, optional = true }
 nix = { workspace = true }
+rand = { workspace = true }
+reqwest = { workspace = true }
+rust-embed = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
+subtle = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

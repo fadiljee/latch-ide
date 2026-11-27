@@ -2,10 +2,13 @@
 //! Orkestrator daemon Latch: Session Manager, server UDS JSON-RPC, logging ter-redaksi,
 //! dan rekonsiliasi startup.
 
+pub mod http_server;
 pub mod logging;
+pub mod notify;
 pub mod session_manager;
 pub mod uds_server;
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -14,7 +17,9 @@ use latch_sandbox::select_provider;
 use tokio::sync::Notify;
 use tracing::{info, warn};
 
+use crate::http_server::{ensure_or_load_token, start_http_server};
 use crate::logging::init_logging;
+use crate::notify::spawn_notification_dispatcher;
 use crate::session_manager::SessionManager;
 use crate::uds_server::serve_uds;
 
@@ -90,13 +95,35 @@ pub fn run_foreground(paths: RuntimePaths) -> anyhow::Result<()> {
         }
 
         let shutdown = Arc::new(Notify::new());
+        let http_bind: SocketAddr = cfg
+            .daemon
+            .http_bind
+            .parse()
+            .context("invalid daemon.http_bind address")?;
+        let notifications_cfg = cfg.notifications.clone();
+
         let manager =
             SessionManager::start(paths.clone(), cfg, agents, sandbox, Arc::clone(&shutdown))
                 .await
                 .context("failed initializing SessionManager")?;
 
+        let web_token =
+            ensure_or_load_token(&paths.token_file()).context("failed preparing web auth token")?;
+        let http_handle =
+            start_http_server(http_bind, manager.clone(), web_token, Arc::clone(&shutdown))
+                .await
+                .context("failed starting local HTTP/WS server")?;
+
+        spawn_notification_dispatcher(
+            notifications_cfg,
+            manager.subscribe_events(),
+            manager.clone(),
+        );
+
         info!(
             socket = %paths.socket_path.display(),
+            http = %http_handle.addr(),
+            proxy = %manager.proxy_base_url(),
             pid = std::process::id(),
             "latch daemon ready"
         );

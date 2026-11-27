@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use latch_core::id::now_ms;
 use latch_core::model::{
-    can_transition, AuditEntry, Project, ProxyMode, Session, SessionStatus, TripReason,
+    can_transition, AuditEntry, Project, ProxyMode, Session, SessionStatus,
+    SessionTelemetrySummary, TelemetryRecord, TripReason, UsageSource,
 };
 use latch_core::redact::redact_secrets;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -100,6 +101,19 @@ enum StoreCmd {
     ListAudit {
         limit: usize,
         reply: Reply<Vec<AuditEntry>>,
+    },
+    InsertTelemetryBatch {
+        records: Vec<TelemetryRecord>,
+        reply: Reply<()>,
+    },
+    ListTelemetry {
+        session_id: String,
+        since: Option<i64>,
+        reply: Reply<Vec<TelemetryRecord>>,
+    },
+    SessionTelemetrySummary {
+        session_id: String,
+        reply: Reply<SessionTelemetrySummary>,
     },
     Shutdown {
         reply: Reply<()>,
@@ -279,6 +293,46 @@ impl StoreHandle {
         self.request(|reply| StoreCmd::ListAudit { limit, reply })
             .await
     }
+
+    /// Menulis sekumpulan catatan telemetri proxy dalam satu transaksi (T-204).
+    pub async fn insert_telemetry_batch(
+        &self,
+        records: Vec<TelemetryRecord>,
+    ) -> Result<(), StoreError> {
+        if records.is_empty() {
+            return Ok(());
+        }
+        self.request(|reply| StoreCmd::InsertTelemetryBatch { records, reply })
+            .await
+    }
+
+    /// Mengambil daftar catatan telemetri untuk sebuah sesi.
+    pub async fn list_telemetry(
+        &self,
+        session_id: &str,
+        since: Option<i64>,
+    ) -> Result<Vec<TelemetryRecord>, StoreError> {
+        let id = session_id.to_string();
+        self.request(|reply| StoreCmd::ListTelemetry {
+            session_id: id,
+            since,
+            reply,
+        })
+        .await
+    }
+
+    /// Mengambil agregat total token, biaya, dan jumlah error untuk sebuah sesi.
+    pub async fn session_telemetry_summary(
+        &self,
+        session_id: &str,
+    ) -> Result<SessionTelemetrySummary, StoreError> {
+        let id = session_id.to_string();
+        self.request(|reply| StoreCmd::SessionTelemetrySummary {
+            session_id: id,
+            reply,
+        })
+        .await
+    }
 }
 
 fn configure_and_migrate(conn: &Connection) -> Result<(), StoreError> {
@@ -370,6 +424,19 @@ fn run_actor(mut conn: Connection, mut rx: mpsc::Receiver<StoreCmd>) {
             }
             StoreCmd::ListAudit { limit, reply } => {
                 let _ = reply.send(exec_list_audit(&conn, limit));
+            }
+            StoreCmd::InsertTelemetryBatch { records, reply } => {
+                let _ = reply.send(exec_insert_telemetry_batch(&mut conn, records));
+            }
+            StoreCmd::ListTelemetry {
+                session_id,
+                since,
+                reply,
+            } => {
+                let _ = reply.send(exec_list_telemetry(&conn, &session_id, since));
+            }
+            StoreCmd::SessionTelemetrySummary { session_id, reply } => {
+                let _ = reply.send(exec_session_telemetry_summary(&conn, &session_id));
             }
             StoreCmd::Shutdown { reply } => {
                 let _ = reply.send(Ok(()));
@@ -611,6 +678,117 @@ fn exec_list_audit(conn: &Connection, limit: usize) -> Result<Vec<AuditEntry>, S
         out.push(row?);
     }
     Ok(out)
+}
+
+fn exec_insert_telemetry_batch(
+    conn: &mut Connection,
+    records: Vec<TelemetryRecord>,
+) -> Result<(), StoreError> {
+    let tx = conn.transaction()?;
+    {
+        let mut stmt = tx.prepare(
+            "INSERT INTO proxy_telemetry (
+                session_id, provider, model, prompt_tokens, completion_tokens,
+                estimated_cost_usd, http_status, latency_ms, ttfb_ms,
+                usage_source, error_kind, request_fingerprint, timestamp
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        )?;
+        for rec in records {
+            let safe_model = rec.model.as_deref().map(|m| truncate_redacted(m, 128));
+            let safe_error = rec.error_kind.as_deref().map(|e| truncate_redacted(e, 128));
+            let safe_fp = rec
+                .request_fingerprint
+                .as_deref()
+                .map(|fp| truncate_redacted(fp, 128));
+            stmt.execute(params![
+                rec.session_id,
+                rec.provider,
+                safe_model,
+                rec.prompt_tokens,
+                rec.completion_tokens,
+                rec.estimated_cost_usd,
+                rec.http_status,
+                rec.latency_ms,
+                rec.ttfb_ms,
+                rec.usage_source.as_str(),
+                safe_error,
+                safe_fp,
+                rec.timestamp,
+            ])?;
+        }
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+fn exec_list_telemetry(
+    conn: &Connection,
+    session_id: &str,
+    since: Option<i64>,
+) -> Result<Vec<TelemetryRecord>, StoreError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, session_id, provider, model, prompt_tokens, completion_tokens,
+                estimated_cost_usd, http_status, latency_ms, ttfb_ms,
+                usage_source, error_kind, request_fingerprint, timestamp
+         FROM proxy_telemetry
+         WHERE session_id = ?1 AND (?2 IS NULL OR timestamp >= ?2)
+         ORDER BY timestamp ASC, id ASC",
+    )?;
+    let rows = stmt.query_map(params![session_id, since], |row| {
+        let src_raw: String = row.get(10)?;
+        let usage_source = src_raw.parse::<UsageSource>().map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(10, rusqlite::types::Type::Text, Box::new(e))
+        })?;
+        Ok(TelemetryRecord {
+            id: row.get(0)?,
+            session_id: row.get(1)?,
+            provider: row.get(2)?,
+            model: row.get(3)?,
+            prompt_tokens: row.get(4)?,
+            completion_tokens: row.get(5)?,
+            estimated_cost_usd: row.get(6)?,
+            http_status: row.get(7)?,
+            latency_ms: row.get(8)?,
+            ttfb_ms: row.get(9)?,
+            usage_source,
+            error_kind: row.get(11)?,
+            request_fingerprint: row.get(12)?,
+            timestamp: row.get(13)?,
+        })
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
+fn exec_session_telemetry_summary(
+    conn: &Connection,
+    session_id: &str,
+) -> Result<SessionTelemetrySummary, StoreError> {
+    conn.query_row(
+        "SELECT
+            COUNT(*),
+            COALESCE(SUM(prompt_tokens), 0),
+            COALESCE(SUM(completion_tokens), 0),
+            COALESCE(SUM(estimated_cost_usd), 0.0),
+            COALESCE(SUM(CASE WHEN error_kind IS NOT NULL OR COALESCE(http_status, 0) >= 400 THEN 1 ELSE 0 END), 0)
+         FROM proxy_telemetry
+         WHERE session_id = ?1",
+        params![session_id],
+        |row| {
+            Ok(SessionTelemetrySummary {
+                session_id: session_id.to_string(),
+                request_count: row.get(0)?,
+                prompt_tokens: row.get(1)?,
+                completion_tokens: row.get(2)?,
+                estimated_cost_usd: row.get(3)?,
+                error_count: row.get(4)?,
+            })
+        },
+    )
+    .map_err(StoreError::from)
 }
 
 fn row_to_project(row: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {

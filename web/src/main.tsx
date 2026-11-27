@@ -11,3 +11,11 @@ if (rootEl) {
     </StrictMode>,
   );
 }
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    void navigator.serviceWorker.register("/sw.js").catch(() => {
+      // Abaikan bila dijalankan pada konteks non-secure atau lingkungan tes
+    });
+  });
+}

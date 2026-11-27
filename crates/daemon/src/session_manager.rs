@@ -1,14 +1,18 @@
 //! Pengelola siklus hidup sesi, worktree, PTY, dan rekonsiliasi startup (T-104, T-131).
 
 use std::collections::HashSet;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use latch_core::config::{AgentsConfig, LatchConfig, RuntimePaths};
 use latch_core::id::{new_id, now_ms, short_id};
 use latch_core::model::{
-    AuditEntry, MergeCheckResult, MergeStrategy, Project, Session, SessionDiff, SessionStatus,
+    AuditEntry, MergeCheckResult, MergeStrategy, Project, ProxyMode, Session, SessionDiff,
+    SessionStatus, SessionTelemetrySummary, TelemetryRecord, TripReason,
 };
+use latch_core::pricing::{load_pricing_table, PricingTable};
 use latch_core::protocol::{
     DaemonHealth, ProjectAddParams, ScreenSnapshot, SessionDiffParams, SessionListParams,
     SessionMergeParams, SessionRunParams,
@@ -18,7 +22,11 @@ use latch_git_engine::{
     create_worktree, inspect_repo, list_worktrees, merge_check, merge_session, remove_worktree,
     worktree_diff, GitError,
 };
-use latch_pty_pool::session::{is_pid_alive, PtyExitEvent, PtySubscriber};
+use latch_proxy::{
+    proxy_env_vars, start_proxy_server, BypassLoopDetector, ProxyError, ProxyRegistry,
+    ProxyServerHandle, SessionLimits, TripEvent,
+};
+use latch_pty_pool::session::{is_pid_alive, PtyExitEvent, PtyFrame, PtySubscriber};
 use latch_pty_pool::{PtyError, PtyPool, PtySpawnRequest};
 use latch_sandbox::build_session_policy;
 use latch_store::{StoreError, StoreHandle};
@@ -28,6 +36,10 @@ use tracing::{info, warn};
 
 const EXIT_EVENT_CAP: usize = 64;
 const DAEMON_EVENT_CAP: usize = 128;
+const TELEMETRY_CHANNEL_CAP: usize = 512;
+const TELEMETRY_BATCH_MAX: usize = 32;
+const TELEMETRY_FLUSH_INTERVAL: Duration = Duration::from_millis(200);
+const TRIP_EVENT_CAP: usize = 64;
 const DEFAULT_DIFF_MAX_BYTES: usize = 256 * 1024;
 
 /// Kesalahan orkestrasi pada `SessionManager`.
@@ -42,6 +54,9 @@ pub enum ManagerError {
     /// Galat manajemen PTY.
     #[error(transparent)]
     Pty(#[from] PtyError),
+    /// Galat reverse proxy LLM lokal.
+    #[error(transparent)]
+    Proxy(#[from] ProxyError),
     /// Galat validasi konfigurasi/profil.
     #[error("configuration error: {0}")]
     Config(String),
@@ -73,7 +88,7 @@ pub enum DaemonEvent {
     },
 }
 
-/// Koordinator state sesi daemon (`store` + `git-engine` + `pty-pool` + `sandbox`).
+/// Koordinator state sesi daemon (`store` + `git-engine` + `pty-pool` + `sandbox` + `proxy`).
 #[derive(Clone)]
 pub struct SessionManager {
     paths: RuntimePaths,
@@ -82,13 +97,16 @@ pub struct SessionManager {
     store: StoreHandle,
     pty_pool: PtyPool,
     sandbox: Arc<dyn SandboxProvider>,
+    proxy_registry: ProxyRegistry,
+    proxy_handle: Arc<ProxyServerHandle>,
     exit_tx: mpsc::Sender<PtyExitEvent>,
+    trip_tx: mpsc::Sender<TripEvent>,
     events_tx: broadcast::Sender<DaemonEvent>,
     shutdown: Arc<Notify>,
 }
 
 impl SessionManager {
-    /// Memulai `SessionManager`, membuka SQLite, serta menjalankan rekonsiliasi startup.
+    /// Memulai `SessionManager`, membuka SQLite, menyalakan proxy LLM lokal, serta menjalankan rekonsiliasi startup.
     pub async fn start(
         paths: RuntimePaths,
         config: LatchConfig,
@@ -99,7 +117,27 @@ impl SessionManager {
         let store = StoreHandle::open(&paths.db_file())?;
         let pty_pool = PtyPool::new();
         let (exit_tx, exit_rx) = mpsc::channel(EXIT_EVENT_CAP);
+        let (telemetry_tx, telemetry_rx) = mpsc::channel(TELEMETRY_CHANNEL_CAP);
+        let (trip_tx, trip_rx) = mpsc::channel(TRIP_EVENT_CAP);
         let (events_tx, _) = broadcast::channel(DAEMON_EVENT_CAP);
+
+        let pricing = match load_pricing_table(&paths.pricing_file()) {
+            Ok(table) => table,
+            Err(err) => {
+                warn!(error = %err, "failed loading pricing.toml; using built-in pricing defaults");
+                PricingTable::default()
+            }
+        };
+
+        let proxy_registry = ProxyRegistry::new();
+        let proxy_handle = start_proxy_server(
+            SocketAddr::from(([127, 0, 0, 1], 0)),
+            proxy_registry.clone(),
+            pricing,
+            telemetry_tx,
+            trip_tx.clone(),
+        )
+        .await?;
 
         let manager = Self {
             paths,
@@ -108,14 +146,108 @@ impl SessionManager {
             store,
             pty_pool,
             sandbox,
+            proxy_registry,
+            proxy_handle: Arc::new(proxy_handle),
             exit_tx,
+            trip_tx,
             events_tx,
             shutdown,
         };
 
         manager.reconcile_startup().await?;
         manager.spawn_exit_watcher(exit_rx);
+        manager.spawn_telemetry_batch_writer(telemetry_rx);
+        manager.spawn_trip_watcher(trip_rx);
         Ok(manager)
+    }
+
+    /// URL dasar reverse proxy LLM lokal (`http://127.0.0.1:<port>`).
+    pub fn proxy_base_url(&self) -> String {
+        self.proxy_handle.base_url()
+    }
+
+    /// Akses ke registri proxy lokal (untuk penimpaan upstream pada pengujian atau integrasi).
+    pub fn proxy_registry(&self) -> &ProxyRegistry {
+        &self.proxy_registry
+    }
+
+    /// Mengambil daftar catatan telemetri proxy untuk sebuah sesi.
+    pub async fn session_telemetry(
+        &self,
+        session_id: &str,
+        since: Option<i64>,
+    ) -> Result<Vec<TelemetryRecord>, ManagerError> {
+        let ses = self.store.get_session(session_id).await?;
+        Ok(self.store.list_telemetry(&ses.id, since).await?)
+    }
+
+    /// Mengambil ringkasan total token, biaya, dan error untuk sebuah sesi.
+    pub async fn session_telemetry_summary(
+        &self,
+        session_id: &str,
+    ) -> Result<SessionTelemetrySummary, ManagerError> {
+        let ses = self.store.get_session(session_id).await?;
+        Ok(self.store.session_telemetry_summary(&ses.id).await?)
+    }
+
+    /// Mencatat peristiwa audit ke SQLite (otomatis melewati redaksi rahasia).
+    pub async fn record_audit(&self, entry: AuditEntry) -> Result<(), ManagerError> {
+        Ok(self.store.insert_audit(entry).await?)
+    }
+
+    /// Mengambil entri audit terbaru.
+    pub async fn list_audit(&self, limit: usize) -> Result<Vec<AuditEntry>, ManagerError> {
+        Ok(self.store.list_audit(limit).await?)
+    }
+
+    /// Menghentikan paksa sesi akibat circuit breaker (`T-208`) dalam < 1 detik.
+    pub async fn trip_session(
+        &self,
+        session_id: &str,
+        reason: TripReason,
+        detail: &str,
+    ) -> Result<Session, ManagerError> {
+        let ses = self.store.get_session(session_id).await?;
+        self.proxy_registry.revoke_session(&ses.id).await;
+        if ses.status.is_terminal() {
+            return Ok(ses);
+        }
+        // Transisikan ke Tripped terlebih dahulu agar exit watcher tidak menimpa menjadi Failed.
+        let updated = self
+            .store
+            .transition_session(
+                &ses.id,
+                SessionStatus::Tripped,
+                Some(-9),
+                Some(reason),
+                Some(now_ms()),
+                true,
+            )
+            .await?;
+        if let Ok(handle) = self.pty_pool.get(&ses.id).await {
+            let _ = handle.kill().await;
+        }
+        let _ = self
+            .store
+            .insert_audit(AuditEntry {
+                id: None,
+                session_id: Some(updated.id.clone()),
+                kind: "trip".to_string(),
+                detail: format!("reason={}: {}", reason.as_str(), detail),
+                timestamp: now_ms(),
+            })
+            .await;
+        let _ = self.events_tx.send(DaemonEvent::SessionStatusChanged {
+            session_id: updated.id.clone(),
+            from: ses.status,
+            to: updated.status,
+        });
+        warn!(
+            session_id = %updated.id,
+            reason = reason.as_str(),
+            "circuit breaker tripped session"
+        );
+        Ok(updated)
     }
 
     /// Memeriksa kesehatan daemon dan jumlah sesi aktif.
@@ -137,10 +269,12 @@ impl SessionManager {
             .await
             .unwrap_or_default();
         for ses in active {
+            self.proxy_registry.revoke_session(&ses.id).await;
             if let Ok(handle) = self.pty_pool.get(&ses.id).await {
                 let _ = handle.kill().await;
             }
         }
+        self.proxy_handle.shutdown();
         self.shutdown.notify_waiters();
     }
 
@@ -266,8 +400,10 @@ impl SessionManager {
     fn spawn_exit_watcher(&self, mut exit_rx: mpsc::Receiver<PtyExitEvent>) {
         let store = self.store.clone();
         let events_tx = self.events_tx.clone();
+        let proxy_registry = self.proxy_registry.clone();
         tokio::spawn(async move {
             while let Some(ev) = exit_rx.recv().await {
+                proxy_registry.revoke_session(&ev.session_id).await;
                 let target = if ev.exit_code == 0 {
                     SessionStatus::Completed
                 } else {
@@ -310,6 +446,64 @@ impl SessionManager {
                             );
                         }
                     }
+                }
+            }
+        });
+    }
+
+    fn spawn_telemetry_batch_writer(&self, mut telemetry_rx: mpsc::Receiver<TelemetryRecord>) {
+        let store = self.store.clone();
+        tokio::spawn(async move {
+            let mut batch: Vec<TelemetryRecord> = Vec::with_capacity(TELEMETRY_BATCH_MAX);
+            let mut interval = tokio::time::interval(TELEMETRY_FLUSH_INTERVAL);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    maybe_rec = telemetry_rx.recv() => {
+                        match maybe_rec {
+                            Some(rec) => {
+                                batch.push(rec);
+                                if batch.len() >= TELEMETRY_BATCH_MAX {
+                                    let to_write = std::mem::take(&mut batch);
+                                    if let Err(err) = store.insert_telemetry_batch(to_write).await {
+                                        warn!(error = %err, "failed persisting proxy telemetry batch");
+                                    }
+                                }
+                            }
+                            None => {
+                                if !batch.is_empty() {
+                                    let _ = store.insert_telemetry_batch(batch).await;
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    _ = interval.tick() => {
+                        if !batch.is_empty() {
+                            let to_write = std::mem::take(&mut batch);
+                            if let Err(err) = store.insert_telemetry_batch(to_write).await {
+                                warn!(error = %err, "failed flushing proxy telemetry batch");
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    fn spawn_trip_watcher(&self, mut trip_rx: mpsc::Receiver<TripEvent>) {
+        let manager = self.clone();
+        tokio::spawn(async move {
+            while let Some(ev) = trip_rx.recv().await {
+                if let Err(err) = manager
+                    .trip_session(&ev.session_id, ev.reason, &ev.detail)
+                    .await
+                {
+                    warn!(
+                        session_id = %ev.session_id,
+                        error = %err,
+                        "failed executing circuit breaker trip"
+                    );
                 }
             }
         });
@@ -395,6 +589,26 @@ impl SessionManager {
             &profile,
         );
 
+        let extra_env = match profile.proxy_mode {
+            ProxyMode::Injected => {
+                let provider = profile
+                    .proxy_provider
+                    .as_deref()
+                    .unwrap_or("openai")
+                    .to_string();
+                let limits = SessionLimits {
+                    max_consecutive_errors: self.config.circuit_breaker.max_consecutive_errors,
+                    max_session_budget_usd: self.config.circuit_breaker.max_session_budget_usd,
+                };
+                let token = self
+                    .proxy_registry
+                    .register_session(session_id.clone(), provider.clone(), limits)
+                    .await;
+                proxy_env_vars(&self.proxy_handle.base_url(), &token, &provider)
+            }
+            ProxyMode::Bypass => Vec::new(),
+        };
+
         let spawn_res = self
             .pty_pool
             .spawn(
@@ -404,6 +618,7 @@ impl SessionManager {
                     isolated_tmp,
                     log_path,
                     profile: profile.clone(),
+                    extra_env,
                     task: params.task.clone(),
                     sandbox_policy,
                     ring_buffer_bytes: self.config.limits.pty_ring_buffer_kib * 1024,
@@ -420,6 +635,7 @@ impl SessionManager {
         let pty_handle = match spawn_res {
             Ok(h) => h,
             Err(err) => {
+                self.proxy_registry.revoke_session(&session_id).await;
                 let _ =
                     remove_worktree(Path::new(&project.repo_path), &worktree_path, &branch_name)
                         .await;
@@ -449,6 +665,7 @@ impl SessionManager {
         let saved = match self.store.insert_session(session).await {
             Ok(s) => s,
             Err(err) => {
+                self.proxy_registry.revoke_session(&session_id).await;
                 let _ = pty_handle.kill().await;
                 let _ =
                     remove_worktree(Path::new(&project.repo_path), &worktree_path, &branch_name)
@@ -456,6 +673,27 @@ impl SessionManager {
                 return Err(err.into());
             }
         };
+
+        if profile.proxy_mode == ProxyMode::Bypass
+            && self.config.circuit_breaker.max_consecutive_errors > 0
+        {
+            let mut sub = pty_handle.subscribe();
+            let mut detector = BypassLoopDetector::new(
+                saved.id.clone(),
+                self.config.circuit_breaker.max_consecutive_errors,
+            );
+            let trip_tx = self.trip_tx.clone();
+            tokio::spawn(async move {
+                while let Some(frame) = sub.rx.recv().await {
+                    if let PtyFrame::Output(bytes) = frame {
+                        if let Some(trip) = detector.observe_pty_bytes(&bytes) {
+                            let _ = trip_tx.try_send(trip);
+                            break;
+                        }
+                    }
+                }
+            });
+        }
 
         info!(session_id = %saved.id, branch = %saved.branch_name, "session started");
         let _ = self.events_tx.send(DaemonEvent::SessionCreated {
@@ -539,6 +777,7 @@ impl SessionManager {
     /// Menghentikan proses PTY sesi dan menandai sesi `failed` bila masih aktif.
     pub async fn kill_session(&self, session_id: &str) -> Result<Session, ManagerError> {
         let ses = self.store.get_session(session_id).await?;
+        self.proxy_registry.revoke_session(&ses.id).await;
         if ses.status.is_terminal() {
             return Ok(ses);
         }
@@ -692,6 +931,7 @@ impl SessionManager {
     /// Membuang sesi beserta worktree dan branch-nya secara idempoten.
     pub async fn discard_session(&self, session_id: &str) -> Result<(), ManagerError> {
         let ses = self.store.get_session(session_id).await?;
+        self.proxy_registry.revoke_session(&ses.id).await;
         if let Ok(handle) = self.pty_pool.get(&ses.id).await {
             let _ = handle.kill().await;
         }

@@ -1,41 +1,126 @@
+import { useEffect, useState } from "react";
+import { DiffViewer } from "../features/diff/DiffViewer";
+import { connectEventsSocket, fetchSessionDiff, fetchSessions } from "../lib/api/client";
+import type { Session, SessionDiff } from "../lib/api/types";
 import { CATALOGS } from "../lib/i18n/catalog";
 import { useWorkbenchStore } from "../lib/store/useWorkbenchStore";
 
 export function App() {
   const locale = useWorkbenchStore((s) => s.locale);
   const sessions = useWorkbenchStore((s) => s.sessions);
+  const connected = useWorkbenchStore((s) => s.connected);
   const setLocale = useWorkbenchStore((s) => s.setLocale);
+  const setSessions = useWorkbenchStore((s) => s.setSessions);
+  const setConnected = useWorkbenchStore((s) => s.setConnected);
   const t = CATALOGS[locale];
 
+  const [tokenInput, setTokenInput] = useState(() => {
+    try {
+      return window.sessionStorage.getItem("latch_token") ?? "";
+    } catch {
+      return "";
+    }
+  });
+  const [activeToken, setActiveToken] = useState(tokenInput);
+  const [activeDiff, setActiveDiff] = useState<SessionDiff | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!activeToken) {
+      return;
+    }
+    let cancelled = false;
+    const refresh = () => {
+      void fetchSessions(activeToken)
+        .then((list) => {
+          if (!cancelled) {
+            setSessions(list);
+            setErrorMsg(null);
+          }
+        })
+        .catch((err: unknown) => {
+          if (!cancelled) {
+            setErrorMsg(err instanceof Error ? err.message : "Failed to load sessions");
+          }
+        });
+    };
+    refresh();
+    const disconnect = connectEventsSocket(
+      activeToken,
+      () => refresh(),
+      (isOk) => {
+        if (!cancelled) {
+          setConnected(isOk);
+        }
+      },
+    );
+    return () => {
+      cancelled = true;
+      disconnect();
+    };
+  }, [activeToken, setConnected, setSessions]);
+
+  const handleConnect = (ev: React.FormEvent) => {
+    ev.preventDefault();
+    const trimmed = tokenInput.trim();
+    try {
+      window.sessionStorage.setItem("latch_token", trimmed);
+    } catch {
+      // Abaikan bila storage tidak tersedia
+    }
+    setActiveToken(trimmed);
+  };
+
+  const handleOpenDiff = (session: Session) => {
+    if (!activeToken) {
+      return;
+    }
+    void fetchSessionDiff(activeToken, session.id)
+      .then((diff) => {
+        setActiveDiff(diff);
+        setErrorMsg(null);
+      })
+      .catch((err: unknown) => {
+        setErrorMsg(err instanceof Error ? err.message : "Failed to load diff");
+      });
+  };
+
   const columns = [
-    { key: "running", title: t.columns.running, count: sessions.filter((s) => s.status === "running").length },
+    {
+      key: "running",
+      title: t.columns.running,
+      items: sessions.filter((s) => s.status === "running" || s.status === "paused"),
+    },
     {
       key: "waiting",
       title: t.columns.waitingApproval,
-      count: sessions.filter((s) => s.status === "waiting_approval").length,
+      items: sessions.filter((s) => s.status === "waiting_approval"),
     },
     {
       key: "review",
       title: t.columns.readyReview,
-      count: sessions.filter((s) => s.status === "completed").length,
+      items: sessions.filter((s) => s.status === "completed"),
     },
     {
       key: "attention",
       title: t.columns.attention,
-      count: sessions.filter((s) => s.status === "failed" || s.status === "tripped").length,
+      items: sessions.filter((s) => s.status === "failed" || s.status === "tripped"),
     },
   ];
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
-      <header className="flex items-center justify-between border-b border-slate-800 px-6 py-4">
+      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 px-4 py-4 sm:px-6">
         <div>
           <h1 className="text-lg font-semibold tracking-tight">{t.appName}</h1>
           <p className="text-sm text-slate-400">{t.subtitle}</p>
         </div>
-        <div className="flex items-center gap-4">
-          <span className="text-xs text-amber-300" aria-label={t.connectionLabel}>
-            {t.disconnected}
+        <div className="flex flex-wrap items-center gap-3">
+          <span
+            className={`text-xs ${connected ? "text-emerald-400" : "text-amber-300"}`}
+            aria-label={t.connectionLabel}
+          >
+            {connected ? t.connected : t.disconnected}
           </span>
           <button
             type="button"
@@ -48,7 +133,30 @@ export function App() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-6xl px-6 py-6">
+      <main className="mx-auto max-w-6xl px-4 py-6 sm:px-6">
+        <form onSubmit={handleConnect} className="mb-6 flex flex-wrap items-center gap-2">
+          <input
+            type="password"
+            value={tokenInput}
+            onChange={(e) => setTokenInput(e.target.value)}
+            placeholder={t.tokenPlaceholder}
+            aria-label={t.tokenPlaceholder}
+            className="min-w-0 flex-1 rounded border border-slate-800 bg-slate-900 px-3 py-1.5 text-xs text-slate-100 placeholder:text-slate-500 focus:border-cyan-500 focus:outline-none"
+          />
+          <button
+            type="submit"
+            className="rounded bg-cyan-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-cyan-500 focus-visible:outline-2 focus-visible:outline-cyan-400"
+          >
+            {t.connectButton}
+          </button>
+        </form>
+
+        {errorMsg ? (
+          <p role="alert" className="mb-4 rounded border border-rose-800 bg-rose-950/50 px-3 py-2 text-xs text-rose-200">
+            {errorMsg}
+          </p>
+        ) : null}
+
         <section aria-labelledby="board-heading">
           <h2 id="board-heading" className="mb-4 text-base font-medium text-slate-200">
             {t.boardHeading}
@@ -62,16 +170,54 @@ export function App() {
                 <div className="mb-2 flex items-center justify-between">
                   <span className="text-sm font-medium">{col.title}</span>
                   <span className="rounded bg-slate-800 px-2 py-0.5 text-xs text-slate-300">
-                    {col.count}
+                    {col.items.length}
                   </span>
                 </div>
-                {sessions.length === 0 ? (
+                {col.items.length === 0 ? (
                   <p className="text-xs text-slate-400">{t.emptySessions}</p>
-                ) : null}
+                ) : (
+                  <ul className="space-y-2">
+                    {col.items.map((ses) => (
+                      <li
+                        key={ses.id}
+                        className="rounded border border-slate-800 bg-slate-950/70 p-2.5 text-xs"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-mono text-cyan-300">{ses.id.slice(0, 8)}</span>
+                          <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[11px] text-slate-300">
+                            {ses.agent_profile}
+                          </span>
+                        </div>
+                        <p className="mt-1 truncate text-slate-300">{ses.task ?? ses.branch_name}</p>
+                        <div className="mt-2 flex items-center justify-between">
+                          <span className="font-mono text-[11px] text-slate-500">
+                            {ses.branch_name}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleOpenDiff(ses)}
+                            className="rounded border border-slate-700 px-2 py-0.5 text-[11px] hover:bg-slate-800"
+                          >
+                            {t.viewDiff}
+                          </button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
             ))}
           </div>
         </section>
+
+        {activeDiff ? (
+          <DiffViewer
+            diff={activeDiff}
+            onClose={() => setActiveDiff(null)}
+            title={t.diffTitle}
+            closeLabel={t.closeLabel}
+          />
+        ) : null}
       </main>
     </div>
   );

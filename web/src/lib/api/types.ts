@@ -41,3 +41,37 @@ export interface DaemonHealth {
   pid: number;
   active_sessions: number;
 }
+
+export interface SessionTelemetrySummary {
+  session_id: string;
+  request_count: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  estimated_cost_usd: number;
+  error_count: number;
+}
+
+export interface SessionDetail extends Session {
+  telemetry: SessionTelemetrySummary;
+}
+
+export interface DiffFileStat {
+  path: string;
+  old_path: string | null;
+  status: "added" | "modified" | "deleted" | "renamed";
+  additions: number;
+  deletions: number;
+}
+
+export interface SessionDiff {
+  base_branch: string;
+  files: DiffFileStat[];
+  patch: string;
+  total_patch_bytes: number;
+  truncated: boolean;
+}
+
+export interface MergeCheckResult {
+  clean: boolean;
+  conflicts: string[];
+}

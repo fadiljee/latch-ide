@@ -72,6 +72,8 @@ pub struct PtySpawnRequest {
     pub log_path: PathBuf,
     /// Profil agen (`command`, `args`, `env`, `pass_env`).
     pub profile: AgentProfile,
+    /// Variabel lingkungan dinamis tambahan (mis. `OPENAI_BASE_URL` hasil injeksi proxy).
+    pub extra_env: Vec<(String, String)>,
     /// Deskripsi tugas (dilewatkan lewat `LATCH_TASK` jika diminta).
     pub task: String,
     /// Kebijakan sandbox sesi.
@@ -389,6 +391,9 @@ fn populate_sanitized_env(cmd: &mut CommandBuilder, req: &PtySpawnRequest) {
     for (k, v) in &req.profile.env {
         cmd.env(k, v);
     }
+    for (k, v) in &req.extra_env {
+        cmd.env(k, v);
+    }
 }
 
 fn spawn_reader_thread(
@@ -602,6 +607,7 @@ mod tests {
                             "printf '\\033[32mOK-LATCH\\033[0m\\n'; sleep 0.2; exit 0",
                         ],
                     ),
+                    extra_env: Vec::new(),
                     task: "echo".to_string(),
                     sandbox_policy: base_policy(dir.path()),
                     ring_buffer_bytes: 64 * 1024,
@@ -646,6 +652,7 @@ mod tests {
                     isolated_tmp: dir.path().join("tmp"),
                     log_path: dir.path().join("pty.log"),
                     profile: test_profile("sh", &["-c", "sleep 30"]),
+                    extra_env: Vec::new(),
                     task: "sleep".to_string(),
                     sandbox_policy: base_policy(dir.path()),
                     ring_buffer_bytes: 64 * 1024,
@@ -692,6 +699,7 @@ mod tests {
                             "seq 1 12000 | awk '{print \"line-\" $1 \"-payload-0123456789\"}'",
                         ],
                     ),
+                    extra_env: Vec::new(),
                     task: "flood".to_string(),
                     sandbox_policy: base_policy(dir.path()),
                     ring_buffer_bytes: 64 * 1024,

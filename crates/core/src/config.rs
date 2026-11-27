@@ -109,9 +109,19 @@ impl RuntimePaths {
         self.config_dir.join("agents.toml")
     }
 
+    /// Mengembalikan jalur berkas `pricing.toml`.
+    pub fn pricing_file(&self) -> PathBuf {
+        self.config_dir.join("pricing.toml")
+    }
+
     /// Mengembalikan jalur berkas basis data SQLite.
     pub fn db_file(&self) -> PathBuf {
         self.state_dir.join("latch.db")
+    }
+
+    /// Mengembalikan jalur berkas bearer token Web/WS (`0600`).
+    pub fn token_file(&self) -> PathBuf {
+        self.state_dir.join("token")
     }
 
     /// Mengembalikan direktori log daemon & PTY.
