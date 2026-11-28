@@ -20,26 +20,26 @@ members = [
 ]
 
 [workspace.package]
-version = "1.2.0"
+version = "1.3.0"
 edition = "2021"
 rust-version = "1.89"
 license = "Apache-2.0"
 
 [workspace.dependencies]
-latch-core = { version = "1.2.0", path = "crates/core" }
-latch-store = { version = "1.2.0", path = "crates/store" }
-latch-git-engine = { version = "1.2.0", path = "crates/git-engine" }
-latch-pty-pool = { version = "1.2.0", path = "crates/pty-pool" }
-latch-sandbox = { version = "1.2.0", path = "crates/sandbox" }
-latch-proxy = { version = "1.2.0", path = "crates/proxy" }
-latch-dag = { version = "1.2.0", path = "crates/dag" }
-latch-fs-service = { version = "1.2.0", path = "crates/fs-service" }
-latch-search = { version = "1.2.0", path = "crates/search" }
-latch-lsp-host = { version = "1.2.0", path = "crates/lsp-host" }
-latch-agent-proto = { version = "1.2.0", path = "crates/agent-proto" }
-latch-workbench-api = { version = "1.2.0", path = "crates/workbench-api" }
-latch-daemon = { version = "1.2.0", path = "crates/daemon" }
-latch-tui = { version = "1.2.0", path = "crates/tui" }
+latch-core = { version = "1.3.0", path = "crates/core" }
+latch-store = { version = "1.3.0", path = "crates/store" }
+latch-git-engine = { version = "1.3.0", path = "crates/git-engine" }
+latch-pty-pool = { version = "1.3.0", path = "crates/pty-pool" }
+latch-sandbox = { version = "1.3.0", path = "crates/sandbox" }
+latch-proxy = { version = "1.3.0", path = "crates/proxy" }
+latch-dag = { version = "1.3.0", path = "crates/dag" }
+latch-fs-service = { version = "1.3.0", path = "crates/fs-service" }
+latch-search = { version = "1.3.0", path = "crates/search" }
+latch-lsp-host = { version = "1.3.0", path = "crates/lsp-host" }
+latch-agent-proto = { version = "1.3.0", path = "crates/agent-proto" }
+latch-workbench-api = { version = "1.3.0", path = "crates/workbench-api" }
+latch-daemon = { version = "1.3.0", path = "crates/daemon" }
+latch-tui = { version = "1.3.0", path = "crates/tui" }
 
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "net", "io-util", "process", "signal", "sync", "time", "fs"] }
 serde = { version = "1", features = ["derive"] }

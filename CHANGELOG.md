@@ -4,6 +4,8 @@ Format mengikuti [Keep a Changelog](https://keepachangelog.com/id-ID/1.1.0/) dan
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-28
+
 ### Added
 - **Shell Tersandbox & Host Terkunci, Protokol ACP/Antrean Pesan, LSP Host Tersandbox & Validasi Workflow (`IT-303`, `IT-306`, `IT-403`–`IT-407`, `IT-501`–`IT-503`, `IT-506`, `IT-510`):**
   - `latch-agent-proto`: parser JSON-RPC 2.0 ACP (`parse_acp_line`, `encode_acp_permission_response`, `encode_acp_prompt_request`), pemetaan izin ACP → approval gate (`WaitingApproval`), pembatas lampiran konteks `@file` anti-prompt-injection (`IT13`), serta antrean pesan FIFO berbatas (`SessionMessageQueue`, maks 64 KiB/pesan).
