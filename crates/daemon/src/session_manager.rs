@@ -6,8 +6,17 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use latch_core::config::{AgentsConfig, LatchConfig, RuntimePaths};
+use latch_core::config::{
+    resolve_command_in_path, save_agents_config, AgentAuthMode, AgentProfile, AgentProfileStatus,
+    AgentsConfig, ApiKeySource, LatchConfig, RuntimePaths,
+};
 use latch_core::id::{new_id, now_ms, short_id};
+use latch_core::integrations::{
+    is_valid_identifier, load_mcp_config, load_plugins_config, parse_gh_auth_status_output,
+    save_mcp_config, save_plugins_config, validate_mcp_server, validate_plugin,
+    write_enabled_mcp_manifest, GitHubRepoItem, GitHubStatus, McpConfig, McpServerConfig,
+    PluginConfig, PluginsConfig,
+};
 use latch_core::model::{
     ApprovalActionType, ApprovalDecision, ApprovalRequest, AuditEntry, GcReport, MergeCheckResult,
     MergeStrategy, PipelineRun, PipelineStatus, Project, ProxyMode, Session, SessionDiff,
@@ -109,6 +118,10 @@ pub struct SessionManager {
     paths: RuntimePaths,
     config: LatchConfig,
     agents: Arc<RwLock<AgentsConfig>>,
+    mcp: Arc<RwLock<McpConfig>>,
+    plugins: Arc<RwLock<PluginsConfig>>,
+    /// API key sementara di RAM daemon saja (tidak pernah ditulis ke disk/SQLite/log, dibersihkan saat shutdown).
+    runtime_api_keys: Arc<RwLock<HashMap<String, String>>>,
     store: StoreHandle,
     pty_pool: PtyPool,
     sandbox: Arc<dyn SandboxProvider>,
@@ -156,10 +169,31 @@ impl SessionManager {
         )
         .await?;
 
+        let mcp_cfg = match load_mcp_config(&paths.mcp_file()) {
+            Ok(cfg) => cfg,
+            Err(err) => {
+                warn!(error = %err, "failed loading mcp.toml; starting with empty MCP registry");
+                McpConfig::default()
+            }
+        };
+        if !mcp_cfg.servers.is_empty() {
+            let _ = write_enabled_mcp_manifest(&paths.mcp_runtime_manifest_file(), &mcp_cfg);
+        }
+        let plugins_cfg = match load_plugins_config(&paths.plugins_file()) {
+            Ok(cfg) => cfg,
+            Err(err) => {
+                warn!(error = %err, "failed loading plugins.toml; starting with empty plugin registry");
+                PluginsConfig::default()
+            }
+        };
+
         let manager = Self {
             paths,
             config,
             agents: Arc::new(RwLock::new(agents)),
+            mcp: Arc::new(RwLock::new(mcp_cfg)),
+            plugins: Arc::new(RwLock::new(plugins_cfg)),
+            runtime_api_keys: Arc::new(RwLock::new(HashMap::new())),
             store,
             pty_pool,
             sandbox,
@@ -407,6 +441,7 @@ impl SessionManager {
 
     /// Memicu penghentian bersih seluruh sesi aktif lalu menutup daemon.
     pub async fn request_shutdown(&self) {
+        self.runtime_api_keys.write().await.clear();
         let active = self
             .store
             .list_sessions(None, None)
@@ -775,14 +810,6 @@ impl SessionManager {
         pipeline_run_id: Option<String>,
         step_id: Option<String>,
     ) -> Result<Session, ManagerError> {
-        let active_count = self.pty_pool.active_count().await;
-        if active_count >= self.config.limits.max_sessions {
-            return Err(ManagerError::MaxSessionsReached(
-                self.config.limits.max_sessions,
-            ));
-        }
-
-        let project = self.store.get_project(&params.project).await?;
         let profile = {
             let guard = self.agents.read().await;
             guard
@@ -793,6 +820,25 @@ impl SessionManager {
                     ManagerError::Config(format!("unknown agent profile '{}'", params.profile))
                 })?
         };
+        self.run_session_with_profile_override(params, profile, pipeline_run_id, step_id)
+            .await
+    }
+
+    async fn run_session_with_profile_override(
+        &self,
+        params: SessionRunParams,
+        mut profile: AgentProfile,
+        pipeline_run_id: Option<String>,
+        step_id: Option<String>,
+    ) -> Result<Session, ManagerError> {
+        let active_count = self.pty_pool.active_count().await;
+        if active_count >= self.config.limits.max_sessions {
+            return Err(ManagerError::MaxSessionsReached(
+                self.config.limits.max_sessions,
+            ));
+        }
+
+        let project = self.store.get_project(&params.project).await?;
 
         let session_id = new_id();
         let short = short_id(&session_id);
@@ -817,6 +863,75 @@ impl SessionManager {
         )
         .await?;
 
+        let mut extra_env: Vec<(String, String)> = Vec::new();
+        let auth_mode_str = match profile.auth_mode {
+            AgentAuthMode::OAuth => "oauth",
+            AgentAuthMode::ApiKey => "api_key",
+            AgentAuthMode::None => "none",
+        };
+        extra_env.push((
+            "LATCH_AGENT_AUTH_MODE".to_string(),
+            auth_mode_str.to_string(),
+        ));
+
+        // Pada mode API Key, teruskan env var API key (host env atau memori RAM daemon) tanpa menulis rahasia ke disk/log.
+        if profile.auth_mode == AgentAuthMode::ApiKey {
+            if let Some(ref env_key) = profile.api_key_env {
+                if !env_key.trim().is_empty() {
+                    if let Some(runtime_val) = self.runtime_api_keys.read().await.get(env_key) {
+                        extra_env.push((env_key.clone(), runtime_val.clone()));
+                    } else if !profile.pass_env.contains(env_key) {
+                        profile.pass_env.push(env_key.clone());
+                    }
+                }
+            }
+            if profile.proxy_provider.is_some() {
+                profile.proxy_mode = ProxyMode::Injected;
+            }
+        }
+
+        // Teruskan manifest MCP aktif dan daftar plugin aktif (hanya nama env_keys, tanpa nilai rahasia).
+        {
+            let mcp_guard = self.mcp.read().await;
+            let enabled_servers: Vec<&McpServerConfig> =
+                mcp_guard.servers.values().filter(|s| s.enabled).collect();
+            if !enabled_servers.is_empty() {
+                let manifest_path = self.paths.mcp_runtime_manifest_file();
+                let _ = write_enabled_mcp_manifest(&manifest_path, &mcp_guard);
+                let ids: Vec<&str> = enabled_servers.iter().map(|s| s.id.as_str()).collect();
+                extra_env.push((
+                    "LATCH_MCP_CONFIG".to_string(),
+                    manifest_path.to_string_lossy().to_string(),
+                ));
+                extra_env.push(("LATCH_MCP_SERVERS".to_string(), ids.join(",")));
+                profile
+                    .extra_ro
+                    .push(manifest_path.to_string_lossy().to_string());
+                for srv in enabled_servers {
+                    for env_key in &srv.env_keys {
+                        if !profile.pass_env.contains(env_key) {
+                            profile.pass_env.push(env_key.clone());
+                        }
+                    }
+                }
+            }
+        }
+        {
+            let plugins_guard = self.plugins.read().await;
+            let enabled_plugins: Vec<&str> = plugins_guard
+                .plugins
+                .values()
+                .filter(|p| p.enabled)
+                .map(|p| p.id.as_str())
+                .collect();
+            if !enabled_plugins.is_empty() {
+                extra_env.push((
+                    "LATCH_PLUGINS_ENABLED".to_string(),
+                    enabled_plugins.join(","),
+                ));
+            }
+        }
+
         let sandbox_policy = build_session_policy(
             &worktree_path,
             &isolated_tmp,
@@ -824,25 +939,26 @@ impl SessionManager {
             &profile,
         );
 
-        let extra_env = match profile.proxy_mode {
-            ProxyMode::Injected => {
-                let provider = profile
-                    .proxy_provider
-                    .as_deref()
-                    .unwrap_or("openai")
-                    .to_string();
-                let limits = SessionLimits {
-                    max_consecutive_errors: self.config.circuit_breaker.max_consecutive_errors,
-                    max_session_budget_usd: self.config.circuit_breaker.max_session_budget_usd,
-                };
-                let token = self
-                    .proxy_registry
-                    .register_session(session_id.clone(), provider.clone(), limits)
-                    .await;
-                proxy_env_vars(&self.proxy_handle.base_url(), &token, &provider)
-            }
-            ProxyMode::Bypass => Vec::new(),
-        };
+        if profile.proxy_mode == ProxyMode::Injected {
+            let provider = profile
+                .proxy_provider
+                .as_deref()
+                .unwrap_or("openai")
+                .to_string();
+            let limits = SessionLimits {
+                max_consecutive_errors: self.config.circuit_breaker.max_consecutive_errors,
+                max_session_budget_usd: self.config.circuit_breaker.max_session_budget_usd,
+            };
+            let token = self
+                .proxy_registry
+                .register_session(session_id.clone(), provider.clone(), limits)
+                .await;
+            extra_env.extend(proxy_env_vars(
+                &self.proxy_handle.base_url(),
+                &token,
+                &provider,
+            ));
+        }
 
         let spawn_res = self
             .pty_pool
@@ -1661,6 +1777,563 @@ impl SessionManager {
             log_files_removed,
             bytes_freed,
         })
+    }
+
+    // =========================================================================
+    // Manajemen Profil Agen (Universal, OAuth Default, API Key Opsional)
+    // =========================================================================
+
+    /// Mengembalikan seluruh profil agen beserta status deteksi biner dan API key (tanpa membocorkan rahasia).
+    pub async fn list_agents(&self) -> Vec<AgentProfileStatus> {
+        let agents_guard = self.agents.read().await;
+        let runtime_keys = self.runtime_api_keys.read().await;
+        let mut list: Vec<AgentProfileStatus> = agents_guard
+            .profiles
+            .iter()
+            .map(|(id, profile)| Self::build_agent_status(id, profile, &runtime_keys))
+            .collect();
+        // Urutkan: coding agent terpasang dulu, lalu coding agent lainnya, lalu shell/test.
+        fn rank(item: &AgentProfileStatus) -> (u8, u8, &str) {
+            let cat_rank = if item.profile.category == "shell" {
+                2
+            } else {
+                0
+            };
+            let inst_rank = if item.installed { 0 } else { 1 };
+            (cat_rank, inst_rank, item.id.as_str())
+        }
+        list.sort_by(|a, b| rank(a).cmp(&rank(b)));
+        list
+    }
+
+    fn build_agent_status(
+        id: &str,
+        profile: &AgentProfile,
+        runtime_keys: &HashMap<String, String>,
+    ) -> AgentProfileStatus {
+        let resolved = resolve_command_in_path(&profile.command);
+        let installed = resolved.is_some();
+        let command_path = resolved.map(|p| p.to_string_lossy().to_string());
+        let (api_key_configured, api_key_source) = match profile.api_key_env.as_deref() {
+            Some(env_name) if !env_name.trim().is_empty() => {
+                if runtime_keys.contains_key(env_name) {
+                    (true, ApiKeySource::RuntimeMemory)
+                } else if std::env::var_os(env_name).is_some_and(|v| !v.is_empty()) {
+                    (true, ApiKeySource::Env)
+                } else {
+                    (false, ApiKeySource::None)
+                }
+            }
+            _ => (false, ApiKeySource::None),
+        };
+        AgentProfileStatus {
+            id: id.to_string(),
+            profile: profile.clone(),
+            installed,
+            command_path,
+            builtin: AgentsConfig::is_builtin_profile(id),
+            api_key_configured,
+            api_key_source,
+        }
+    }
+
+    /// Menambah atau memperbarui profil agen (OAuth/API key/custom CLI) dan menyimpannya ke `agents.toml`.
+    pub async fn upsert_agent(
+        &self,
+        id: String,
+        mut profile: AgentProfile,
+    ) -> Result<AgentProfileStatus, ManagerError> {
+        if !is_valid_identifier(&id) {
+            return Err(ManagerError::Config(
+                "agent profile id must contain only ASCII letters, digits, '-' or '_'".to_string(),
+            ));
+        }
+        if profile.command.trim().is_empty() {
+            return Err(ManagerError::Config(
+                "agent profile command cannot be empty".to_string(),
+            ));
+        }
+        // Sinkronkan mode proxy secara otomatis dengan mode autentikasi.
+        match profile.auth_mode {
+            AgentAuthMode::OAuth | AgentAuthMode::None => {
+                profile.proxy_mode = ProxyMode::Bypass;
+            }
+            AgentAuthMode::ApiKey => {
+                if profile
+                    .proxy_provider
+                    .as_deref()
+                    .is_some_and(|p| !p.trim().is_empty())
+                {
+                    profile.proxy_mode = ProxyMode::Injected;
+                } else {
+                    profile.proxy_mode = ProxyMode::Bypass;
+                }
+            }
+        }
+
+        let mut agents_guard = self.agents.write().await;
+        let mut candidate = agents_guard.clone();
+        candidate.profiles.insert(id.clone(), profile.clone());
+        save_agents_config(&self.paths.agents_file(), &candidate)
+            .map_err(|e| ManagerError::Config(e.to_string()))?;
+        *agents_guard = candidate;
+        drop(agents_guard);
+
+        let _ = self
+            .store
+            .insert_audit(AuditEntry {
+                id: None,
+                session_id: None,
+                kind: "agent_config".to_string(),
+                detail: format!(
+                    "upserted agent profile '{id}' (auth_mode={:?})",
+                    profile.auth_mode
+                ),
+                timestamp: now_ms(),
+            })
+            .await;
+
+        let runtime_keys = self.runtime_api_keys.read().await;
+        Ok(Self::build_agent_status(&id, &profile, &runtime_keys))
+    }
+
+    /// Menghapus profil agen custom dari `agents.toml` (profil bawaan tidak dihapus agar tetap siap pakai).
+    pub async fn delete_agent(&self, id: &str) -> Result<(), ManagerError> {
+        if AgentsConfig::is_builtin_profile(id) {
+            return Err(ManagerError::Config(format!(
+                "built-in agent profile '{id}' cannot be deleted; edit its auth mode instead"
+            )));
+        }
+        let mut agents_guard = self.agents.write().await;
+        if !agents_guard.profiles.contains_key(id) {
+            return Err(ManagerError::Store(StoreError::NotFound {
+                entity: "agent",
+                key: id.to_string(),
+            }));
+        }
+        let mut candidate = agents_guard.clone();
+        candidate.profiles.remove(id);
+        save_agents_config(&self.paths.agents_file(), &candidate)
+            .map_err(|e| ManagerError::Config(e.to_string()))?;
+        *agents_guard = candidate;
+        Ok(())
+    }
+
+    /// Menyimpan atau menghapus API key sementara di memori RAM daemon (0 byte ke disk/SQLite/log).
+    pub async fn set_agent_runtime_key(
+        &self,
+        id: &str,
+        api_key: Option<String>,
+    ) -> Result<AgentProfileStatus, ManagerError> {
+        let profile = {
+            let guard = self.agents.read().await;
+            guard.profiles.get(id).cloned().ok_or_else(|| {
+                ManagerError::Store(StoreError::NotFound {
+                    entity: "agent",
+                    key: id.to_string(),
+                })
+            })?
+        };
+        let env_name = profile
+            .api_key_env
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                ManagerError::Config(format!("agent profile '{id}' does not define api_key_env"))
+            })?
+            .to_string();
+
+        let action_label = {
+            let mut keys = self.runtime_api_keys.write().await;
+            match api_key.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                Some(val) => {
+                    keys.insert(env_name.clone(), val.to_string());
+                    "set"
+                }
+                None => {
+                    keys.remove(&env_name);
+                    "cleared"
+                }
+            }
+        };
+
+        let _ = self
+            .store
+            .insert_audit(AuditEntry {
+                id: None,
+                session_id: None,
+                kind: "agent_runtime_key".to_string(),
+                detail: format!("{action_label} in-memory runtime key for '{id}' ({env_name})"),
+                timestamp: now_ms(),
+            })
+            .await;
+
+        let runtime_keys = self.runtime_api_keys.read().await;
+        Ok(Self::build_agent_status(id, &profile, &runtime_keys))
+    }
+
+    /// Membuka sesi PTY interaktif untuk login OAuth CLI agen langsung di terminal Latch IDE.
+    pub async fn start_agent_login_session(
+        &self,
+        id: &str,
+        project_opt: Option<String>,
+    ) -> Result<Session, ManagerError> {
+        let profile = {
+            let guard = self.agents.read().await;
+            guard.profiles.get(id).cloned().ok_or_else(|| {
+                ManagerError::Store(StoreError::NotFound {
+                    entity: "agent",
+                    key: id.to_string(),
+                })
+            })?
+        };
+        let project_key = self.resolve_project_for_interactive(project_opt).await?;
+        let (cmd, args) = if let Some((first, rest)) = profile.login_command.split_first() {
+            (first.clone(), rest.to_vec())
+        } else {
+            (profile.command.clone(), profile.args.clone())
+        };
+        let display = profile
+            .display_name
+            .clone()
+            .unwrap_or_else(|| id.to_string());
+        let login_profile = AgentProfile {
+            command: cmd,
+            args,
+            auth_mode: AgentAuthMode::OAuth,
+            proxy_mode: ProxyMode::Bypass,
+            ..profile
+        };
+        self.run_session_with_profile_override(
+            SessionRunParams {
+                project: project_key,
+                profile: id.to_string(),
+                task: format!("OAuth Login: {display}"),
+                base_ref: None,
+            },
+            login_profile,
+            None,
+            None,
+        )
+        .await
+    }
+
+    async fn resolve_project_for_interactive(
+        &self,
+        project_opt: Option<String>,
+    ) -> Result<String, ManagerError> {
+        if let Some(p) = project_opt.filter(|s| !s.trim().is_empty()) {
+            return Ok(p);
+        }
+        let projects = self.store.list_projects().await?;
+        projects.first().map(|p| p.id.clone()).ok_or_else(|| {
+            ManagerError::Config(
+                "register at least one Git project first to open an interactive login terminal"
+                    .to_string(),
+            )
+        })
+    }
+
+    // =========================================================================
+    // Integrasi GitHub CLI (`gh`), MCP Servers, dan Plugins
+    // =========================================================================
+
+    /// Memeriksa status autentikasi GitHub CLI (`gh auth status`) tanpa mengekspos token.
+    pub async fn github_status(&self) -> GitHubStatus {
+        let gh_path = resolve_command_in_path("gh");
+        let Some(path) = gh_path else {
+            return GitHubStatus {
+                gh_installed: false,
+                gh_path: None,
+                authenticated: false,
+                host: "github.com".to_string(),
+                account: None,
+                protocol: None,
+                scopes: Vec::new(),
+            };
+        };
+        let path_str = path.to_string_lossy().to_string();
+        let output = tokio::time::timeout(
+            Duration::from_secs(5),
+            tokio::process::Command::new(&path)
+                .args(["auth", "status"])
+                .output(),
+        )
+        .await;
+        match output {
+            Ok(Ok(out)) => {
+                let combined = format!(
+                    "{}\n{}",
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                parse_gh_auth_status_output(&combined, Some(path_str))
+            }
+            _ => GitHubStatus {
+                gh_installed: true,
+                gh_path: Some(path_str),
+                authenticated: false,
+                host: "github.com".to_string(),
+                account: None,
+                protocol: None,
+                scopes: Vec::new(),
+            },
+        }
+    }
+
+    /// Mengambil daftar repositori GitHub milik akun aktif melalui `gh repo list`.
+    pub async fn github_list_repos(&self) -> Result<Vec<GitHubRepoItem>, ManagerError> {
+        let Some(gh_path) = resolve_command_in_path("gh") else {
+            return Err(ManagerError::Config(
+                "GitHub CLI (`gh`) is not installed on PATH".to_string(),
+            ));
+        };
+        let output = tokio::time::timeout(
+            Duration::from_secs(10),
+            tokio::process::Command::new(&gh_path)
+                .args([
+                    "repo",
+                    "list",
+                    "--limit",
+                    "30",
+                    "--json",
+                    "nameWithOwner,url,defaultBranchRef,isPrivate,description",
+                ])
+                .output(),
+        )
+        .await
+        .map_err(|_| ManagerError::Config("gh repo list timed out".to_string()))?
+        .map_err(|e| ManagerError::Config(format!("failed running gh repo list: {e}")))?;
+
+        if !output.status.success() {
+            let err_msg = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return Err(ManagerError::Config(if err_msg.is_empty() {
+                "GitHub CLI is not authenticated; connect via GitHub OAuth first".to_string()
+            } else {
+                err_msg
+            }));
+        }
+
+        #[derive(serde::Deserialize)]
+        struct GhDefaultBranch {
+            name: Option<String>,
+        }
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct GhRepoRow {
+            name_with_owner: String,
+            url: String,
+            default_branch_ref: Option<GhDefaultBranch>,
+            is_private: bool,
+            description: Option<String>,
+        }
+
+        let rows: Vec<GhRepoRow> = serde_json::from_slice(&output.stdout)
+            .map_err(|e| ManagerError::Config(format!("failed parsing gh repo list JSON: {e}")))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| GitHubRepoItem {
+                name_with_owner: r.name_with_owner,
+                url: r.url,
+                default_branch: r.default_branch_ref.and_then(|b| b.name),
+                is_private: r.is_private,
+                description: r.description.filter(|d| !d.trim().is_empty()),
+            })
+            .collect())
+    }
+
+    /// Membuka sesi PTY `gh auth login --web` untuk login GitHub OAuth di browser.
+    pub async fn start_github_login_session(
+        &self,
+        project_opt: Option<String>,
+    ) -> Result<Session, ManagerError> {
+        if resolve_command_in_path("gh").is_none() {
+            return Err(ManagerError::Config(
+                "GitHub CLI (`gh`) is not installed; install `gh` first".to_string(),
+            ));
+        }
+        let project_key = self.resolve_project_for_interactive(project_opt).await?;
+        let gh_profile = AgentProfile {
+            display_name: Some("GitHub OAuth".to_string()),
+            command: "gh".to_string(),
+            args: vec![
+                "auth".to_string(),
+                "login".to_string(),
+                "--web".to_string(),
+                "--hostname".to_string(),
+                "github.com".to_string(),
+            ],
+            auth_mode: AgentAuthMode::OAuth,
+            proxy_mode: ProxyMode::Bypass,
+            extra_rw: vec!["~/.config/gh".to_string()],
+            ..AgentProfile::default()
+        };
+        self.run_session_with_profile_override(
+            SessionRunParams {
+                project: project_key,
+                profile: "github-oauth".to_string(),
+                task: "GitHub OAuth Login (gh auth login --web)".to_string(),
+                base_ref: None,
+            },
+            gh_profile,
+            None,
+            None,
+        )
+        .await
+    }
+
+    /// Melakukan clone repositori GitHub via `gh repo clone` dan langsung mendaftarkannya ke proyek Latch.
+    pub async fn github_clone_repo(
+        &self,
+        repo: &str,
+        target_dir: Option<String>,
+    ) -> Result<Project, ManagerError> {
+        let Some(gh_path) = resolve_command_in_path("gh") else {
+            return Err(ManagerError::Config(
+                "GitHub CLI (`gh`) is not installed on PATH".to_string(),
+            ));
+        };
+        let repo_trimmed = repo.trim();
+        let mut parts = repo_trimmed.split('/');
+        let owner = parts.next().unwrap_or("");
+        let name = parts.next().unwrap_or("");
+        let valid_seg = |s: &str| {
+            !s.is_empty()
+                && s != "."
+                && s != ".."
+                && s.len() <= 100
+                && s.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
+        };
+        if !valid_seg(owner) || !valid_seg(name) || parts.next().is_some() {
+            return Err(ManagerError::Config(
+                "repo must be in valid 'owner/name' format".to_string(),
+            ));
+        }
+
+        let dest = match target_dir
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            Some(custom) => RuntimePaths::expand_tilde(custom),
+            None => RuntimePaths::expand_tilde(&format!("~/Projects/{name}")),
+        };
+
+        if !dest.exists() {
+            if let Some(parent) = dest.parent() {
+                tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                    ManagerError::Config(format!("failed creating parent dir: {e}"))
+                })?;
+            }
+            let output = tokio::time::timeout(
+                Duration::from_secs(120),
+                tokio::process::Command::new(&gh_path)
+                    .args(["repo", "clone", "--", repo_trimmed])
+                    .arg(&dest)
+                    .output(),
+            )
+            .await
+            .map_err(|_| ManagerError::Config("gh repo clone timed out".to_string()))?
+            .map_err(|e| ManagerError::Config(format!("failed executing gh repo clone: {e}")))?;
+
+            if !output.status.success() {
+                let err_msg = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                return Err(ManagerError::Config(if err_msg.is_empty() {
+                    "gh repo clone failed".to_string()
+                } else {
+                    err_msg
+                }));
+            }
+        }
+
+        self.add_project(ProjectAddParams {
+            repo_path: dest.to_string_lossy().to_string(),
+            name: Some(name.to_string()),
+            default_branch: None,
+        })
+        .await
+    }
+
+    /// Mengambil daftar server MCP terkonfigurasi.
+    pub async fn list_mcp_servers(&self) -> Vec<McpServerConfig> {
+        self.mcp.read().await.servers.values().cloned().collect()
+    }
+
+    /// Menambah atau memperbarui satu server MCP di `mcp.toml` dan menyinkronkan manifest runtime.
+    pub async fn upsert_mcp_server(
+        &self,
+        server: McpServerConfig,
+    ) -> Result<McpServerConfig, ManagerError> {
+        validate_mcp_server(&server).map_err(|e| ManagerError::Config(e.to_string()))?;
+        let mut guard = self.mcp.write().await;
+        let mut candidate = guard.clone();
+        candidate.servers.insert(server.id.clone(), server.clone());
+        save_mcp_config(&self.paths.mcp_file(), &candidate)
+            .map_err(|e| ManagerError::Config(e.to_string()))?;
+        let _ = write_enabled_mcp_manifest(&self.paths.mcp_runtime_manifest_file(), &candidate);
+        *guard = candidate;
+        Ok(server)
+    }
+
+    /// Menghapus satu server MCP dari `mcp.toml`.
+    pub async fn delete_mcp_server(&self, id: &str) -> Result<(), ManagerError> {
+        let mut guard = self.mcp.write().await;
+        if !guard.servers.contains_key(id) {
+            return Err(ManagerError::Store(StoreError::NotFound {
+                entity: "mcp_server",
+                key: id.to_string(),
+            }));
+        }
+        let mut candidate = guard.clone();
+        candidate.servers.remove(id);
+        save_mcp_config(&self.paths.mcp_file(), &candidate)
+            .map_err(|e| ManagerError::Config(e.to_string()))?;
+        let _ = write_enabled_mcp_manifest(&self.paths.mcp_runtime_manifest_file(), &candidate);
+        *guard = candidate;
+        Ok(())
+    }
+
+    /// Mengambil daftar plugin terkonfigurasi.
+    pub async fn list_plugins(&self) -> Vec<PluginConfig> {
+        self.plugins
+            .read()
+            .await
+            .plugins
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    /// Menambah atau memperbarui satu plugin di `plugins.toml`.
+    pub async fn upsert_plugin(&self, plugin: PluginConfig) -> Result<PluginConfig, ManagerError> {
+        validate_plugin(&plugin).map_err(|e| ManagerError::Config(e.to_string()))?;
+        let mut guard = self.plugins.write().await;
+        let mut candidate = guard.clone();
+        candidate.plugins.insert(plugin.id.clone(), plugin.clone());
+        save_plugins_config(&self.paths.plugins_file(), &candidate)
+            .map_err(|e| ManagerError::Config(e.to_string()))?;
+        *guard = candidate;
+        Ok(plugin)
+    }
+
+    /// Menghapus satu plugin dari `plugins.toml`.
+    pub async fn delete_plugin(&self, id: &str) -> Result<(), ManagerError> {
+        let mut guard = self.plugins.write().await;
+        if !guard.plugins.contains_key(id) {
+            return Err(ManagerError::Store(StoreError::NotFound {
+                entity: "plugin",
+                key: id.to_string(),
+            }));
+        }
+        let mut candidate = guard.clone();
+        candidate.plugins.remove(id);
+        save_plugins_config(&self.paths.plugins_file(), &candidate)
+            .map_err(|e| ManagerError::Config(e.to_string()))?;
+        *guard = candidate;
+        Ok(())
     }
 }
 

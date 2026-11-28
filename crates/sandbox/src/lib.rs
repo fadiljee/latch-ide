@@ -308,6 +308,7 @@ mod tests {
             resume_args: Vec::new(),
             extra_rw: vec!["~/.ssh".to_string(), "~/.claude".to_string()],
             extra_ro: vec!["/opt/tool".to_string()],
+            ..AgentProfile::default()
         };
         let policy = build_session_policy(
             Path::new("/tmp/wt"),

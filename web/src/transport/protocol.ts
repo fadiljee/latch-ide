@@ -180,3 +180,78 @@ export interface DaemonEventFrame {
   status?: string;
   approval?: ApprovalRequest;
 }
+
+export type AgentAuthMode = "oauth" | "api_key" | "none";
+export type ApiKeySource = "env" | "runtime_memory" | "none";
+
+export interface AgentProfile {
+  display_name?: string | null;
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+  pass_env: string[];
+  auth_mode: AgentAuthMode;
+  api_key_env?: string | null;
+  login_command: string[];
+  proxy_mode: ProxyMode;
+  proxy_provider?: string | null;
+  resume_args: string[];
+  extra_rw: string[];
+  extra_ro: string[];
+  category: string;
+  description?: string | null;
+}
+
+export interface AgentProfileStatus {
+  id: string;
+  profile: AgentProfile;
+  installed: boolean;
+  command_path: string | null;
+  builtin: boolean;
+  api_key_configured: boolean;
+  api_key_source: ApiKeySource;
+}
+
+export type McpTransport = "stdio" | "http";
+
+export interface McpServerConfig {
+  id: string;
+  name: string;
+  transport: McpTransport;
+  command?: string | null;
+  args: string[];
+  url?: string | null;
+  env_keys: string[];
+  enabled: boolean;
+  description?: string | null;
+}
+
+export type PluginKind = "mcp_bundle" | "agent_adapter" | "workflow_pack" | "hook";
+
+export interface PluginConfig {
+  id: string;
+  name: string;
+  kind: PluginKind;
+  source: string;
+  command?: string | null;
+  enabled: boolean;
+  description?: string | null;
+}
+
+export interface GitHubStatus {
+  gh_installed: boolean;
+  gh_path: string | null;
+  authenticated: boolean;
+  host: string;
+  account: string | null;
+  protocol: string | null;
+  scopes: string[];
+}
+
+export interface GitHubRepoItem {
+  name_with_owner: string;
+  url: string;
+  default_branch: string | null;
+  is_private: boolean;
+  description: string | null;
+}

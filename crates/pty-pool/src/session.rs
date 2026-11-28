@@ -397,7 +397,27 @@ impl PtyPool {
 }
 
 fn populate_sanitized_env(cmd: &mut CommandBuilder, req: &PtySpawnRequest) {
-    for key in ["PATH", "HOME", "LANG", "LC_ALL", "USER", "SHELL"] {
+    // Teruskan variabel lingkungan non-rahasia standar termasuk sesi desktop/XDG agar
+    // alur login OAuth browser dan keyring sistem (gh, agy, claude, codex, dll.) berjalan mulus.
+    for key in [
+        "PATH",
+        "HOME",
+        "LANG",
+        "LC_ALL",
+        "USER",
+        "SHELL",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_RUNTIME_DIR",
+        "DISPLAY",
+        "WAYLAND_DISPLAY",
+        "DBUS_SESSION_BUS_ADDRESS",
+        "BROWSER",
+        "COLORTERM",
+        "NO_COLOR",
+    ] {
         if let Some(val) = std::env::var_os(key) {
             cmd.env(key, val);
         }
@@ -600,6 +620,7 @@ mod tests {
             resume_args: Vec::new(),
             extra_rw: Vec::new(),
             extra_ro: Vec::new(),
+            ..AgentProfile::default()
         }
     }
 

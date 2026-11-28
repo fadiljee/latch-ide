@@ -96,6 +96,7 @@ async fn secret_canary_never_leaks_to_sqlite_or_logs_and_breaker_trips_session()
             resume_args: Vec::new(),
             extra_rw: Vec::new(),
             extra_ro: Vec::new(),
+            ..AgentProfile::default()
         },
     );
     // Profil bypass yang membuktikan OPENAI_BASE_URL TIDAK disuntikkan
@@ -114,6 +115,7 @@ async fn secret_canary_never_leaks_to_sqlite_or_logs_and_breaker_trips_session()
             resume_args: Vec::new(),
             extra_rw: Vec::new(),
             extra_ro: Vec::new(),
+            ..AgentProfile::default()
         },
     );
 
@@ -302,6 +304,7 @@ async fn budget_circuit_breaker_trips_session_under_one_second() {
             resume_args: Vec::new(),
             extra_rw: Vec::new(),
             extra_ro: Vec::new(),
+            ..AgentProfile::default()
         },
     );
 

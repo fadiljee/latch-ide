@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::integrations::{is_valid_env_name, is_valid_identifier};
 use crate::model::ProxyMode;
 
 /// Kesalahan parsing atau validasi konfigurasi beserta konteks field/baris.
@@ -112,6 +113,21 @@ impl RuntimePaths {
     /// Mengembalikan jalur berkas `pricing.toml`.
     pub fn pricing_file(&self) -> PathBuf {
         self.config_dir.join("pricing.toml")
+    }
+
+    /// Mengembalikan jalur berkas `mcp.toml`.
+    pub fn mcp_file(&self) -> PathBuf {
+        self.config_dir.join("mcp.toml")
+    }
+
+    /// Mengembalikan jalur berkas `plugins.toml`.
+    pub fn plugins_file(&self) -> PathBuf {
+        self.config_dir.join("plugins.toml")
+    }
+
+    /// Mengembalikan jalur manifest JSON runtime server MCP aktif.
+    pub fn mcp_runtime_manifest_file(&self) -> PathBuf {
+        self.state_dir.join("mcp-enabled.json")
     }
 
     /// Mengembalikan jalur berkas basis data SQLite.
@@ -314,6 +330,54 @@ impl Default for RetentionConfig {
     }
 }
 
+/// Mode autentikasi profil agen (bawaan: OAuth native CLI agen).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentAuthMode {
+    /// Autentikasi OAuth native CLI agen (default; berjalan langsung lewat `proxy_mode = "bypass"`).
+    #[default]
+    OAuth,
+    /// Autentikasi memakai API key (env var / memori sesi daemon; memakai proxy lokal bila provider tersedia).
+    ApiKey,
+    /// Tanpa autentikasi (mis. shell lokal).
+    None,
+}
+
+/// Sumber API key terdeteksi (tanpa pernah membocorkan nilai kunci).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApiKeySource {
+    /// Tersedia melalui variabel lingkungan host.
+    Env,
+    /// Tersedia sementara di memori RAM daemon (hilang saat daemon berhenti).
+    RuntimeMemory,
+    /// Belum terkonfigurasi.
+    None,
+}
+
+/// Ringkasan profil agen berikut status deteksi biner dan autentikasi untuk API/UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentProfileStatus {
+    /// Nama/ID profil (mis. `antigravity`, `claude`, `codex`).
+    pub id: String,
+    /// Definisi lengkap profil agen.
+    pub profile: AgentProfile,
+    /// Apakah perintah/biner agen ditemukan pada `PATH` sistem.
+    pub installed: bool,
+    /// Jalur biner terdeteksi jika tersedia.
+    pub command_path: Option<String>,
+    /// Menandakan apakah profil termasuk bawaan Latch.
+    pub builtin: bool,
+    /// Menandakan apakah API key (sesuai `api_key_env`) sudah tersedia.
+    pub api_key_configured: bool,
+    /// Asal API key terdeteksi (`env`, `runtime_memory`, atau `none`).
+    pub api_key_source: ApiKeySource,
+}
+
+fn default_agent_category() -> String {
+    "coding_agent".to_string()
+}
+
 /// Kumpulan profil agen (`agents.toml`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -323,65 +387,230 @@ pub struct AgentsConfig {
 }
 
 impl AgentsConfig {
-    /// Profil bawaan minimal untuk pengujian/benchmark bila `agents.toml` belum dibuat.
+    /// Profil bawaan komprehensif untuk seluruh agen coding populer (OAuth default) + utilitas lokal.
     pub fn with_builtin_defaults() -> Self {
         let mut profiles = BTreeMap::new();
         profiles.insert(
             "sleeper".to_string(),
             AgentProfile {
+                display_name: Some("Sleeper (Test)".to_string()),
                 command: "sh".to_string(),
                 args: vec!["-c".to_string(), "sleep 3600".to_string()],
-                env: BTreeMap::new(),
-                pass_env: Vec::new(),
+                auth_mode: AgentAuthMode::None,
                 proxy_mode: ProxyMode::Bypass,
-                proxy_provider: None,
-                resume_args: Vec::new(),
-                extra_rw: Vec::new(),
-                extra_ro: Vec::new(),
+                category: "shell".to_string(),
+                description: Some("Background sleep session for testing".to_string()),
+                ..AgentProfile::default()
             },
         );
         profiles.insert(
             "shell".to_string(),
             AgentProfile {
+                display_name: Some("Local Shell".to_string()),
                 command: "sh".to_string(),
-                args: Vec::new(),
-                env: BTreeMap::new(),
-                pass_env: Vec::new(),
+                auth_mode: AgentAuthMode::None,
                 proxy_mode: ProxyMode::Bypass,
-                proxy_provider: None,
-                resume_args: Vec::new(),
-                extra_rw: Vec::new(),
-                extra_ro: Vec::new(),
+                category: "shell".to_string(),
+                description: Some("Interactive POSIX shell inside isolated worktree".to_string()),
+                ..AgentProfile::default()
             },
         );
-        for (name, cmd, provider) in [
-            ("claude", "claude", "anthropic"),
-            ("codex", "codex", "openai"),
-            ("gemini", "gemini", "google"),
-            ("opencode", "opencode", "openai"),
-        ] {
+
+        struct BuiltinSpec<'a> {
+            id: &'a str,
+            display: &'a str,
+            cmd: &'a str,
+            args: &'a [&'a str],
+            provider: Option<&'a str>,
+            api_key_env: Option<&'a str>,
+            login_cmd: &'a [&'a str],
+            extra_rw: &'a [&'a str],
+            desc: &'a str,
+        }
+
+        let specs = [
+            BuiltinSpec {
+                id: "antigravity",
+                display: "Antigravity (agy)",
+                cmd: "agy",
+                args: &[],
+                provider: Some("google"),
+                api_key_env: Some("GEMINI_API_KEY"),
+                login_cmd: &["agy"],
+                extra_rw: &["~/.gemini", "~/.config/antigravity"],
+                desc: "Google Antigravity coding agent CLI (OAuth default, API key optional)",
+            },
+            BuiltinSpec {
+                id: "claude",
+                display: "Claude Code",
+                cmd: "claude",
+                args: &[],
+                provider: Some("anthropic"),
+                api_key_env: Some("ANTHROPIC_API_KEY"),
+                login_cmd: &["claude", "login"],
+                extra_rw: &["~/.claude"],
+                desc: "Anthropic Claude Code CLI (OAuth default, ANTHROPIC_API_KEY optional)",
+            },
+            BuiltinSpec {
+                id: "codex",
+                display: "OpenAI Codex",
+                cmd: "codex",
+                args: &[],
+                provider: Some("openai"),
+                api_key_env: Some("OPENAI_API_KEY"),
+                login_cmd: &["codex", "login"],
+                extra_rw: &["~/.codex"],
+                desc: "OpenAI Codex CLI (ChatGPT OAuth default, OPENAI_API_KEY optional)",
+            },
+            BuiltinSpec {
+                id: "gemini",
+                display: "Gemini CLI",
+                cmd: "gemini",
+                args: &[],
+                provider: Some("google"),
+                api_key_env: Some("GEMINI_API_KEY"),
+                login_cmd: &["gemini"],
+                extra_rw: &["~/.gemini"],
+                desc: "Google Gemini CLI (Google OAuth default, GEMINI_API_KEY optional)",
+            },
+            BuiltinSpec {
+                id: "opencode",
+                display: "OpenCode",
+                cmd: "opencode",
+                args: &[],
+                provider: Some("openai"),
+                api_key_env: Some("OPENAI_API_KEY"),
+                login_cmd: &["opencode", "auth", "login"],
+                extra_rw: &["~/.config/opencode", "~/.local/share/opencode"],
+                desc: "OpenCode multi-provider coding CLI (OAuth or API key)",
+            },
+            BuiltinSpec {
+                id: "aider",
+                display: "Aider",
+                cmd: "aider",
+                args: &[],
+                provider: Some("openai"),
+                api_key_env: Some("OPENAI_API_KEY"),
+                login_cmd: &["aider"],
+                extra_rw: &[],
+                desc: "Aider AI pair programmer in terminal",
+            },
+            BuiltinSpec {
+                id: "goose",
+                display: "Goose",
+                cmd: "goose",
+                args: &[],
+                provider: Some("openai"),
+                api_key_env: Some("OPENAI_API_KEY"),
+                login_cmd: &["goose", "configure"],
+                extra_rw: &["~/.config/goose"],
+                desc: "Block Goose extensible developer agent with native MCP",
+            },
+            BuiltinSpec {
+                id: "amp",
+                display: "Amp",
+                cmd: "amp",
+                args: &[],
+                provider: Some("anthropic"),
+                api_key_env: Some("AMP_API_KEY"),
+                login_cmd: &["amp", "login"],
+                extra_rw: &["~/.config/amp"],
+                desc: "Sourcegraph Amp coding agent CLI",
+            },
+            BuiltinSpec {
+                id: "cline",
+                display: "Cline CLI",
+                cmd: "cline",
+                args: &[],
+                provider: Some("anthropic"),
+                api_key_env: Some("ANTHROPIC_API_KEY"),
+                login_cmd: &["cline", "auth"],
+                extra_rw: &["~/.cline"],
+                desc: "Cline autonomous coding agent CLI",
+            },
+            BuiltinSpec {
+                id: "cursor",
+                display: "Cursor Agent",
+                cmd: "cursor-agent",
+                args: &[],
+                provider: Some("openai"),
+                api_key_env: Some("CURSOR_API_KEY"),
+                login_cmd: &["cursor-agent", "login"],
+                extra_rw: &["~/.cursor"],
+                desc: "Cursor headless CLI agent",
+            },
+            BuiltinSpec {
+                id: "copilot",
+                display: "GitHub Copilot CLI",
+                cmd: "gh",
+                args: &["copilot"],
+                provider: None,
+                api_key_env: Some("GITHUB_TOKEN"),
+                login_cmd: &["gh", "auth", "login", "--web"],
+                extra_rw: &["~/.config/gh"],
+                desc: "GitHub Copilot CLI via GitHub OAuth",
+            },
+            BuiltinSpec {
+                id: "kimi",
+                display: "Kimi CLI",
+                cmd: "kimi",
+                args: &[],
+                provider: Some("openai"),
+                api_key_env: Some("MOONSHOT_API_KEY"),
+                login_cmd: &["kimi", "login"],
+                extra_rw: &["~/.kimi"],
+                desc: "Moonshot Kimi coding agent CLI",
+            },
+            BuiltinSpec {
+                id: "qwen",
+                display: "Qwen Code",
+                cmd: "qwen",
+                args: &[],
+                provider: Some("openai"),
+                api_key_env: Some("DASHSCOPE_API_KEY"),
+                login_cmd: &["qwen"],
+                extra_rw: &["~/.qwen"],
+                desc: "Qwen Code terminal coding agent",
+            },
+        ];
+
+        for spec in specs {
             profiles.insert(
-                name.to_string(),
+                spec.id.to_string(),
                 AgentProfile {
-                    command: cmd.to_string(),
-                    args: Vec::new(),
+                    display_name: Some(spec.display.to_string()),
+                    command: spec.cmd.to_string(),
+                    args: spec.args.iter().map(|s| (*s).to_string()).collect(),
                     env: BTreeMap::new(),
                     pass_env: Vec::new(),
-                    proxy_mode: ProxyMode::Injected,
-                    proxy_provider: Some(provider.to_string()),
+                    auth_mode: AgentAuthMode::OAuth,
+                    api_key_env: spec.api_key_env.map(str::to_string),
+                    login_command: spec.login_cmd.iter().map(|s| (*s).to_string()).collect(),
+                    proxy_mode: ProxyMode::Bypass,
+                    proxy_provider: spec.provider.map(str::to_string),
                     resume_args: Vec::new(),
-                    extra_rw: Vec::new(),
+                    extra_rw: spec.extra_rw.iter().map(|s| (*s).to_string()).collect(),
                     extra_ro: Vec::new(),
+                    category: "coding_agent".to_string(),
+                    description: Some(spec.desc.to_string()),
                 },
             );
         }
         Self { profiles }
+    }
+
+    /// Menentukan apakah nama profil merupakan profil bawaan Latch.
+    pub fn is_builtin_profile(name: &str) -> bool {
+        Self::with_builtin_defaults().profiles.contains_key(name)
     }
 }
 
 /// Definisi satu profil agen CLI di `agents.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentProfile {
+    /// Nama tampilan ramah pengguna (opsional).
+    #[serde(default)]
+    pub display_name: Option<String>,
     /// Perintah/biner yang dijalankan di PTY.
     pub command: String,
     /// Argumen dasar perintah.
@@ -393,7 +622,16 @@ pub struct AgentProfile {
     /// Nama variabel lingkungan host yang diizinkan diteruskan ke sesi.
     #[serde(default)]
     pub pass_env: Vec<String>,
-    /// Mode injeksi proxy (`injected` atau `bypass`).
+    /// Mode autentikasi agen (`oauth` [default], `api_key`, atau `none`).
+    #[serde(default)]
+    pub auth_mode: AgentAuthMode,
+    /// Nama variabel lingkungan API key (hanya nama variabel, bukan nilainya).
+    #[serde(default)]
+    pub api_key_env: Option<String>,
+    /// Perintah login interaktif OAuth untuk CLI agen (mis. `["claude", "login"]`).
+    #[serde(default)]
+    pub login_command: Vec<String>,
+    /// Mode injeksi proxy (`bypass` untuk OAuth atau `injected` untuk telemetri API key).
     #[serde(default)]
     pub proxy_mode: ProxyMode,
     /// Penyedia proxy (`openai`, `anthropic`, `google`) bila `proxy_mode = "injected"`.
@@ -408,6 +646,72 @@ pub struct AgentProfile {
     /// Jalur baca saja tambahan khusus profil.
     #[serde(default)]
     pub extra_ro: Vec<String>,
+    /// Kategori profil (`coding_agent`, `shell`, `custom`).
+    #[serde(default = "default_agent_category")]
+    pub category: String,
+    /// Deskripsi singkat opsional.
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+impl Default for AgentProfile {
+    fn default() -> Self {
+        Self {
+            display_name: None,
+            command: String::new(),
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            pass_env: Vec::new(),
+            auth_mode: AgentAuthMode::OAuth,
+            api_key_env: None,
+            login_command: Vec::new(),
+            proxy_mode: ProxyMode::Bypass,
+            proxy_provider: None,
+            resume_args: Vec::new(),
+            extra_rw: Vec::new(),
+            extra_ro: Vec::new(),
+            category: default_agent_category(),
+            description: None,
+        }
+    }
+}
+
+/// Mencari jalur eksekusi perintah pada `PATH` sistem (tanpa menjalankan subprocess).
+pub fn resolve_command_in_path(command: &str) -> Option<PathBuf> {
+    let trimmed = command.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let candidate = PathBuf::from(trimmed);
+    if candidate.is_absolute() || trimmed.contains(std::path::MAIN_SEPARATOR) {
+        return is_executable_file(&candidate).then_some(candidate);
+    }
+    let path_var = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_var) {
+        let full = dir.join(trimmed);
+        if is_executable_file(&full) {
+            return Some(full);
+        }
+    }
+    None
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    let Ok(meta) = fs::metadata(path) else {
+        return false;
+    };
+    if !meta.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        meta.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
 }
 
 /// Memuat dan memvalidasi `config.toml` dari disk, atau mengembalikan default jika tidak ada.
@@ -430,16 +734,58 @@ pub fn parse_latch_config_str(src: &str, path_label: &str) -> Result<LatchConfig
     Ok(cfg)
 }
 
-/// Memuat dan memvalidasi `agents.toml` dari disk, atau memakai profil bawaan jika belum ada.
+/// Memuat `agents.toml` dari disk digabung di atas profil bawaan agar profil baru (seperti Antigravity)
+/// selalu tersedia sembari mempertahankan seluruh kustomisasi pengguna.
 pub fn load_agents_config(path: &Path) -> Result<AgentsConfig, ConfigError> {
+    let mut merged = AgentsConfig::with_builtin_defaults();
     if !path.exists() {
-        return Ok(AgentsConfig::with_builtin_defaults());
+        return Ok(merged);
     }
     let content = fs::read_to_string(path).map_err(|source| ConfigError::Io {
         path: path.display().to_string(),
         source,
     })?;
-    parse_agents_config_str(&content, &path.display().to_string())
+    let user_cfg = parse_agents_config_str(&content, &path.display().to_string())?;
+    for (name, profile) in user_cfg.profiles {
+        merged.profiles.insert(name, profile);
+    }
+    Ok(merged)
+}
+
+/// Menyimpan seluruh konfigurasi profil agen ke `agents.toml` secara aman (`0600`).
+pub fn save_agents_config(path: &Path, cfg: &AgentsConfig) -> Result<(), ConfigError> {
+    validate_agents_config(cfg, "", &path.display().to_string())?;
+    let serialized = toml::to_string_pretty(cfg).map_err(|err| ConfigError::Validation {
+        path: path.display().to_string(),
+        line: 1,
+        field: "profiles".to_string(),
+        message: err.to_string(),
+    })?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|source| ConfigError::Io {
+            path: parent.display().to_string(),
+            source,
+        })?;
+    }
+    let tmp_path = path.with_extension("tmp");
+    fs::write(&tmp_path, serialized).map_err(|source| ConfigError::Io {
+        path: tmp_path.display().to_string(),
+        source,
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&tmp_path, fs::Permissions::from_mode(0o600)).map_err(|source| {
+            ConfigError::Io {
+                path: tmp_path.display().to_string(),
+                source,
+            }
+        })?;
+    }
+    fs::rename(&tmp_path, path).map_err(|source| ConfigError::Io {
+        path: path.display().to_string(),
+        source,
+    })
 }
 
 /// Mem-parse dan memvalidasi isi string `agents.toml` dengan pelaporan baris & field.
@@ -514,6 +860,15 @@ fn validate_agents_config(
     path_label: &str,
 ) -> Result<(), ConfigError> {
     for (name, profile) in &cfg.profiles {
+        if !is_valid_identifier(name) {
+            return Err(ConfigError::Validation {
+                path: path_label.to_string(),
+                line: find_profile_field_line(src, name, "command"),
+                field: format!("profiles.{name}"),
+                message: "profile name must contain only ASCII letters, digits, '-' or '_'"
+                    .to_string(),
+            });
+        }
         if profile.command.trim().is_empty() {
             return Err(ConfigError::Validation {
                 path: path_label.to_string(),
@@ -521,6 +876,17 @@ fn validate_agents_config(
                 field: format!("profiles.{name}.command"),
                 message: "command cannot be empty".to_string(),
             });
+        }
+        if let Some(ref env_key) = profile.api_key_env {
+            if !env_key.trim().is_empty() && !is_valid_env_name(env_key) {
+                return Err(ConfigError::Validation {
+                    path: path_label.to_string(),
+                    line: find_profile_field_line(src, name, "api_key_env"),
+                    field: format!("profiles.{name}.api_key_env"),
+                    message: "api_key_env must be an env var name, never a raw secret value"
+                        .to_string(),
+                });
+            }
         }
         if profile.proxy_mode == ProxyMode::Injected
             && profile

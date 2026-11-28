@@ -67,6 +67,16 @@ export function CommandPalette() {
         run: () => toggleSplit(),
       },
       {
+        id: "open-agents",
+        label: t.palette.openAgents,
+        run: () => setActiveRoute("bots"),
+      },
+      {
+        id: "open-plugins",
+        label: t.palette.openPlugins,
+        run: () => setActiveRoute("plugins"),
+      },
+      {
         id: "open-settings",
         label: t.palette.openSettings,
         run: () => setActiveRoute("settings"),

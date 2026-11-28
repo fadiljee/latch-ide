@@ -4,6 +4,12 @@ Format mengikuti [Keep a Changelog](https://keepachangelog.com/id-ID/1.1.0/) dan
 
 ## [Unreleased]
 
+### Added
+- **Universal Agent Profiles (OAuth Default & Optional API Key), GitHub CLI, MCP Servers, dan Plugins:**
+  - `latch-core`: model & parser `mcp.toml` (`McpServerConfig`, `McpTransport`), `plugins.toml` (`PluginConfig`, `PluginKind`), parser status `gh auth status` tanpa token (`GitHubStatus`, `GitHubRepoItem`), `AgentAuthMode` (`oauth`/`api_key`/`none`), `ApiKeySource` (`env`/`runtime_memory`/`none`), serta profil agen bawaan komprehensif (`antigravity`, `claude`, `codex`, `gemini`, `opencode`, `aider`, `goose`, `amp`, `cline`, `cursor`, `copilot`, `kimi`, `qwen`, `shell`).
+  - `latch-daemon`, `latch-pty-pool`, `latch-sandbox`: endpoint REST `/api/v1/agents*` (CRUD profil, runtime API key khusus RAM daemon tanpa persisten ke disk/SQLite, login OAuth interaktif PTY), `/api/v1/integrations/github*` (status `gh`, daftar repo, login OAuth, clone & tambah proyek), `/api/v1/mcp*` (CRUD + manifest runtime `mcp-enabled.json`), `/api/v1/plugins*`, serta tes integrasi keamanan `crates/daemon/tests/integrations_api.rs`.
+  - `web/`: halaman **Agen (`BotsPage`, `AgentCard`, `AddAgentDialog`)** dengan filter/pencarian, pengalihan mode OAuth ↔ API Key, input kunci RAM sementara, dan tombol login OAuth; halaman **Integrasi (`PluginsPage`)** bertab GitHub, MCP Servers (preset 1-klik + custom), dan Plugins; lengkap dengan i18n `id`/`en`, Command Palette, dan tes unit Vitest.
+
 ## [1.2.0] - 2026-11-27
 
 ### Added

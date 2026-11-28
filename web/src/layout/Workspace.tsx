@@ -6,6 +6,7 @@ import { TabBar, type TabOption } from "../components/TabBar";
 import { AutomationsPage } from "../features/automations/AutomationsPage";
 import { BotsPage } from "../features/bots/BotsPage";
 import { HostsPage } from "../features/hosts/HostsPage";
+import { PluginsPage } from "../features/plugins/PluginsPage";
 import { ChatView } from "../features/sessions/ChatView";
 import { SettingsPage } from "../features/settings/SettingsPage";
 import { UsagePage } from "../features/usage/UsagePage";
@@ -198,7 +199,18 @@ export function Workspace() {
   if (activeRoute === "bots") {
     return (
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden bg-app">
-        <BotsPage labels={t.pages} newSessionLabel={t.workspace.newSessionCta} />
+        <BotsPage
+          labels={t.pages}
+          agentLabels={t.agents}
+          newSessionLabel={t.workspace.newSessionCta}
+        />
+      </main>
+    );
+  }
+  if (activeRoute === "plugins") {
+    return (
+      <main className="flex min-w-0 flex-1 flex-col overflow-hidden bg-app">
+        <PluginsPage labels={t.integrations} />
       </main>
     );
   }

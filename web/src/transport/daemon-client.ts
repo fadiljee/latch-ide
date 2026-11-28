@@ -1,11 +1,17 @@
 import type {
+  AgentProfile,
+  AgentProfileStatus,
   ApprovalRequest,
   DaemonEventFrame,
   DaemonHealth,
   GcReport,
+  GitHubRepoItem,
+  GitHubStatus,
+  McpServerConfig,
   MergeCheckResult,
   PipelineArenaResponse,
   PipelineRun,
+  PluginConfig,
   Project,
   ScreenSnapshot,
   Session,
@@ -270,6 +276,144 @@ export async function triggerGc(token: string, dryRun: boolean): Promise<GcRepor
     headers: authHeaders(token),
     body: JSON.stringify({ dry_run: dryRun }),
   });
+}
+
+export async function fetchAgents(token: string): Promise<AgentProfileStatus[]> {
+  return fetchJson<AgentProfileStatus[]>(`${apiBase()}/api/v1/agents`, {
+    headers: authHeaders(token),
+  });
+}
+
+export async function upsertAgent(
+  token: string,
+  id: string,
+  profile: AgentProfile,
+): Promise<AgentProfileStatus> {
+  return fetchJson<AgentProfileStatus>(`${apiBase()}/api/v1/agents/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    headers: authHeaders(token),
+    body: JSON.stringify(profile),
+  });
+}
+
+export async function deleteAgent(token: string, id: string): Promise<void> {
+  const resp = await fetch(`${apiBase()}/api/v1/agents/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    headers: authHeaders(token),
+  });
+  if (!resp.ok) {
+    throw new Error(`HTTP ${resp.status}`);
+  }
+}
+
+export async function setAgentRuntimeKey(
+  token: string,
+  id: string,
+  apiKey: string | null,
+): Promise<AgentProfileStatus> {
+  return fetchJson<AgentProfileStatus>(
+    `${apiBase()}/api/v1/agents/${encodeURIComponent(id)}/runtime-key`,
+    {
+      method: "POST",
+      headers: authHeaders(token),
+      body: JSON.stringify({ api_key: apiKey }),
+    },
+  );
+}
+
+export async function startAgentLogin(
+  token: string,
+  id: string,
+  project?: string,
+): Promise<Session> {
+  return fetchJson<Session>(`${apiBase()}/api/v1/agents/${encodeURIComponent(id)}/login`, {
+    method: "POST",
+    headers: authHeaders(token),
+    body: JSON.stringify({ project: project ?? null }),
+  });
+}
+
+export async function fetchGitHubStatus(token: string): Promise<GitHubStatus> {
+  return fetchJson<GitHubStatus>(`${apiBase()}/api/v1/integrations/github`, {
+    headers: authHeaders(token),
+  });
+}
+
+export async function fetchGitHubRepos(token: string): Promise<GitHubRepoItem[]> {
+  return fetchJson<GitHubRepoItem[]>(`${apiBase()}/api/v1/integrations/github/repos`, {
+    headers: authHeaders(token),
+  });
+}
+
+export async function startGitHubLogin(token: string, project?: string): Promise<Session> {
+  return fetchJson<Session>(`${apiBase()}/api/v1/integrations/github/login`, {
+    method: "POST",
+    headers: authHeaders(token),
+    body: JSON.stringify({ project: project ?? null }),
+  });
+}
+
+export async function cloneGitHubRepo(
+  token: string,
+  repo: string,
+  targetDir?: string,
+): Promise<Project> {
+  return fetchJson<Project>(`${apiBase()}/api/v1/integrations/github/clone`, {
+    method: "POST",
+    headers: authHeaders(token),
+    body: JSON.stringify({ repo, target_dir: targetDir ?? null }),
+  });
+}
+
+export async function fetchMcpServers(token: string): Promise<McpServerConfig[]> {
+  return fetchJson<McpServerConfig[]>(`${apiBase()}/api/v1/mcp`, {
+    headers: authHeaders(token),
+  });
+}
+
+export async function upsertMcpServer(
+  token: string,
+  server: McpServerConfig,
+): Promise<McpServerConfig> {
+  return fetchJson<McpServerConfig>(`${apiBase()}/api/v1/mcp/${encodeURIComponent(server.id)}`, {
+    method: "PUT",
+    headers: authHeaders(token),
+    body: JSON.stringify(server),
+  });
+}
+
+export async function deleteMcpServer(token: string, id: string): Promise<void> {
+  const resp = await fetch(`${apiBase()}/api/v1/mcp/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    headers: authHeaders(token),
+  });
+  if (!resp.ok) {
+    throw new Error(`HTTP ${resp.status}`);
+  }
+}
+
+export async function fetchPlugins(token: string): Promise<PluginConfig[]> {
+  return fetchJson<PluginConfig[]>(`${apiBase()}/api/v1/plugins`, {
+    headers: authHeaders(token),
+  });
+}
+
+export async function upsertPlugin(token: string, plugin: PluginConfig): Promise<PluginConfig> {
+  return fetchJson<PluginConfig>(`${apiBase()}/api/v1/plugins/${encodeURIComponent(plugin.id)}`, {
+    method: "PUT",
+    headers: authHeaders(token),
+    body: JSON.stringify(plugin),
+  });
+}
+
+export async function deletePlugin(token: string, id: string): Promise<void> {
+  const resp = await fetch(`${apiBase()}/api/v1/plugins/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    headers: authHeaders(token),
+  });
+  if (!resp.ok) {
+    throw new Error(`HTTP ${resp.status}`);
+  }
 }
 
 export function connectEventsSocket(

@@ -58,6 +58,7 @@ fn test_agents_config() -> AgentsConfig {
             resume_args: Vec::new(),
             extra_rw: Vec::new(),
             extra_ro: Vec::new(),
+            ..AgentProfile::default()
         },
     );
     profiles.insert(
@@ -75,6 +76,7 @@ fn test_agents_config() -> AgentsConfig {
             resume_args: Vec::new(),
             extra_rw: Vec::new(),
             extra_ro: Vec::new(),
+            ..AgentProfile::default()
         },
     );
     profiles.insert(
@@ -89,6 +91,7 @@ fn test_agents_config() -> AgentsConfig {
             resume_args: Vec::new(),
             extra_rw: Vec::new(),
             extra_ro: Vec::new(),
+            ..AgentProfile::default()
         },
     );
     AgentsConfig { profiles }

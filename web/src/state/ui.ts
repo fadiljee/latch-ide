@@ -2,7 +2,14 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { Locale } from "../lib/i18n/catalog";
 
-export type AppRoute = "workspace" | "automations" | "bots" | "hosts" | "usage" | "settings";
+export type AppRoute =
+  | "workspace"
+  | "automations"
+  | "bots"
+  | "plugins"
+  | "hosts"
+  | "usage"
+  | "settings";
 export type SidebarGrouping = "status" | "tree";
 export type SidePanelTab = "git" | "checks" | "traffic";
 
