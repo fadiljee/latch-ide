@@ -10,7 +10,9 @@ use std::time::Duration;
 use latch_core::config::AgentProfile;
 use latch_core::id::now_ms;
 use latch_core::sandbox::{SandboxPolicy, SandboxProvider};
+#[cfg(unix)]
 use nix::sys::signal::{kill, Signal};
+#[cfg(unix)]
 use nix::unistd::Pid;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use thiserror::Error;
@@ -226,14 +228,34 @@ impl PtySessionHandle {
         PtySubscriber { initial_bytes, rx }
     }
 
-    /// Mengirim `SIGSTOP` ke process group sesi.
+    /// Mengirim `SIGSTOP` ke process group sesi (khusus Unix).
     pub fn pause(&self) -> Result<(), PtyError> {
-        send_signal(self.state.pid, Signal::SIGSTOP)
+        #[cfg(unix)]
+        {
+            send_signal(self.state.pid, Signal::SIGSTOP)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = self.state.pid;
+            Err(PtyError::Signal(
+                "pause (SIGSTOP) is only supported on Unix hosts".to_string(),
+            ))
+        }
     }
 
-    /// Mengirim `SIGCONT` ke process group sesi.
+    /// Mengirim `SIGCONT` ke process group sesi (khusus Unix).
     pub fn resume(&self) -> Result<(), PtyError> {
-        send_signal(self.state.pid, Signal::SIGCONT)
+        #[cfg(unix)]
+        {
+            send_signal(self.state.pid, Signal::SIGCONT)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = self.state.pid;
+            Err(PtyError::Signal(
+                "resume (SIGCONT) is only supported on Unix hosts".to_string(),
+            ))
+        }
     }
 
     /// Mengirim `SIGTERM` diikuti `SIGKILL` setelah grace period bila proses masih hidup.
@@ -241,10 +263,20 @@ impl PtySessionHandle {
         let Some(pid) = self.state.pid else {
             return Ok(());
         };
-        let _ = send_signal(Some(pid), Signal::SIGTERM);
-        tokio::time::sleep(KILL_GRACE_PERIOD).await;
-        if is_pid_alive(pid) {
-            let _ = send_signal(Some(pid), Signal::SIGKILL);
+        #[cfg(unix)]
+        {
+            let _ = send_signal(Some(pid), Signal::SIGTERM);
+            tokio::time::sleep(KILL_GRACE_PERIOD).await;
+            if is_pid_alive(pid) {
+                let _ = send_signal(Some(pid), Signal::SIGKILL);
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = KILL_GRACE_PERIOD;
+            let _ = std::process::Command::new("taskkill")
+                .args(["/PID", &pid.to_string(), "/T", "/F"])
+                .status();
         }
         Ok(())
     }
@@ -547,6 +579,7 @@ fn flush_subscribers(state: &Arc<SessionState>, pending: &mut Vec<u8>) {
     });
 }
 
+#[cfg(unix)]
 fn send_signal(pid: Option<u32>, sig: Signal) -> Result<(), PtyError> {
     let Some(raw_pid) = pid else {
         return Ok(());
@@ -566,13 +599,28 @@ fn send_signal(pid: Option<u32>, sig: Signal) -> Result<(), PtyError> {
 
 /// Memeriksa apakah suatu PID masih hidup di OS saat ini.
 pub fn is_pid_alive(raw_pid: u32) -> bool {
-    let Ok(pid_i32) = i32::try_from(raw_pid) else {
-        return false;
-    };
-    match kill(Pid::from_raw(pid_i32), None) {
-        Ok(()) => true,
-        Err(nix::errno::Errno::EPERM) => true,
-        Err(_) => false,
+    #[cfg(unix)]
+    {
+        let Ok(pid_i32) = i32::try_from(raw_pid) else {
+            return false;
+        };
+        match kill(Pid::from_raw(pid_i32), None) {
+            Ok(()) => true,
+            Err(nix::errno::Errno::EPERM) => true,
+            Err(_) => false,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let filter = format!("PID eq {raw_pid}");
+        std::process::Command::new("tasklist")
+            .args(["/FI", &filter, "/NH"])
+            .output()
+            .map(|o| {
+                o.status.success()
+                    && String::from_utf8_lossy(&o.stdout).contains(&raw_pid.to_string())
+            })
+            .unwrap_or(false)
     }
 }
 

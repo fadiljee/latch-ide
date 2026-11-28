@@ -15,8 +15,8 @@ use latch_core::model::{
     MergeStrategy, PipelineRun, PipelineStatus, Session, SessionDiff, SessionStatus,
 };
 use latch_core::protocol::{
-    read_raw_frame, write_raw_frame, AttachFrame, PipelineListParams, SessionDiffParams,
-    SessionListParams, SessionMergeParams, UdsClient,
+    read_raw_frame, write_raw_frame, AttachFrame, IpcReadHalf, IpcWriteHalf, PipelineListParams,
+    SessionDiffParams, SessionListParams, SessionMergeParams, UdsClient,
 };
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -25,7 +25,6 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 use thiserror::Error;
-use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 
 /// Kesalahan pada antarmuka TUI.
 #[derive(Debug, Error)]
@@ -166,8 +165,8 @@ impl TuiApp {
 }
 
 struct AttachConn {
-    reader: OwnedReadHalf,
-    writer: OwnedWriteHalf,
+    reader: IpcReadHalf,
+    writer: IpcWriteHalf,
 }
 
 /// Menjalankan antarmuka TUI interaktif yang tersambung ke UDS daemon.

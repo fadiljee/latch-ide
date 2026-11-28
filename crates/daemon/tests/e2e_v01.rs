@@ -1,3 +1,4 @@
+#![cfg(unix)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Tes integrasi end-to-end Fase 1 (`T-150`): 3 sesi paralel, diff/merge/discard,
 //! isolasi crash `kill -9` (NFR-06), rekonsiliasi restart daemon (T-104), dan tes kanari (NFR-05).

@@ -5,7 +5,50 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::UnixStream;
+
+/// Stream IPC lokal klien-daemon (Unix Domain Socket di Unix, loopback TCP di Windows).
+#[cfg(unix)]
+pub type IpcStream = tokio::net::UnixStream;
+/// Paruh baca stream IPC lokal.
+#[cfg(unix)]
+pub type IpcReadHalf = tokio::net::unix::OwnedReadHalf;
+/// Paruh tulis stream IPC lokal.
+#[cfg(unix)]
+pub type IpcWriteHalf = tokio::net::unix::OwnedWriteHalf;
+
+/// Stream IPC lokal klien-daemon (loopback TCP di OS non-Unix).
+#[cfg(not(unix))]
+pub type IpcStream = tokio::net::TcpStream;
+/// Paruh baca stream IPC lokal.
+#[cfg(not(unix))]
+pub type IpcReadHalf = tokio::net::tcp::OwnedReadHalf;
+/// Paruh tulis stream IPC lokal.
+#[cfg(not(unix))]
+pub type IpcWriteHalf = tokio::net::tcp::OwnedWriteHalf;
+
+async fn connect_ipc(socket_path: &Path) -> Result<IpcStream, std::io::Error> {
+    #[cfg(unix)]
+    {
+        tokio::net::UnixStream::connect(socket_path).await
+    }
+    #[cfg(not(unix))]
+    {
+        let raw = std::fs::read_to_string(socket_path)?;
+        let addr: std::net::SocketAddr = raw.trim().parse().map_err(|err| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("invalid loopback IPC endpoint: {err}"),
+            )
+        })?;
+        if !addr.ip().is_loopback() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "refusing non-loopback IPC endpoint",
+            ));
+        }
+        tokio::net::TcpStream::connect(addr).await
+    }
+}
 
 use crate::model::{
     GcReport, MergeCheckResult, MergeStrategy, PipelineRun, Project, Session, SessionDiff,
@@ -463,7 +506,7 @@ impl UdsClient {
         method: &str,
         params: &P,
     ) -> Result<R, ProtocolError> {
-        let mut stream = UnixStream::connect(&self.socket_path).await?;
+        let mut stream = connect_ipc(&self.socket_path).await?;
         let req = JsonRpcRequest::new(1, method, serde_json::to_value(params)?);
         write_json_frame(&mut stream, &req).await?;
 
@@ -482,8 +525,8 @@ impl UdsClient {
     }
 
     /// Membuka stream attach PTY untuk satu sesi (kirim JSON-RPC `session.attach`, lalu pakai frame biner).
-    pub async fn attach_stream(&self, session_id: &str) -> Result<UnixStream, ProtocolError> {
-        let mut stream = UnixStream::connect(&self.socket_path).await?;
+    pub async fn attach_stream(&self, session_id: &str) -> Result<IpcStream, ProtocolError> {
+        let mut stream = connect_ipc(&self.socket_path).await?;
         let params = serde_json::to_value(SessionIdParams {
             session_id: session_id.to_string(),
         })?;
