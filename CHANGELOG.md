@@ -5,6 +5,8 @@ Format mengikuti [Keep a Changelog](https://keepachangelog.com/id-ID/1.1.0/) dan
 ## [Unreleased]
 
 ### Added
+- **Katalog Tarif Model LLM (`T-903`, `R-10`):**
+  - Memperbarui tabel harga bawaan `PricingTable` di `latch-core` (24 model termasuk `gpt-5`, `o3`/`o4-mini`, `claude-opus-4-1`/`claude-sonnet-4-5`, `gemini-2.5-*`, `deepseek-*`, `kimi-k2`, `qwen3-coder`), validasi angka finit, dan contoh `examples/pricing.toml` tervalidasi oleh tes unit.
 - **Kompatibilitas OS macOS & Windows di CI (`T-901`, `NFR-07`):**
   - Memindahkan dependensi `nix` di `latch-pty-pool` dan `latch-daemon` ke `[target.'cfg(unix)'.dependencies]`, menyediakan abstraksi `IpcStream` lintas OS (`UnixStream` di Unix, loopback `TcpStream` di Windows) di `latch-core`/`latch-daemon`/`latch-tui`, serta menambahkan matrix job CI `os-compat` (`macos-latest` & `windows-latest`).
 - **Keamanan Rantai Pasok CI (`T-900`, `SECURITY §11`):**
