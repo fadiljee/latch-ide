@@ -233,6 +233,40 @@ pub async fn start_http_server(
             post(handle_search_text),
         )
         .route("/api/v1/search/{id}", delete(handle_cancel_search))
+        .route("/api/v1/sessions/{id}/git/status", get(handle_git_status))
+        .route("/api/v1/sessions/{id}/git/stage", post(handle_git_stage))
+        .route(
+            "/api/v1/sessions/{id}/git/unstage",
+            post(handle_git_unstage),
+        )
+        .route("/api/v1/sessions/{id}/git/commit", post(handle_git_commit))
+        .route("/api/v1/sessions/{id}/git/log", get(handle_git_log))
+        .route("/api/v1/sessions/{id}/git/blame", get(handle_git_blame))
+        .route(
+            "/api/v1/sessions/{id}/git/sync-base",
+            post(handle_git_sync_base),
+        )
+        .route("/api/v1/sessions/{id}/review", get(handle_session_review))
+        .route(
+            "/api/v1/sessions/{id}/review/hunks/{hunk_id}/accept",
+            post(handle_review_accept_hunk),
+        )
+        .route(
+            "/api/v1/sessions/{id}/review/hunks/{hunk_id}/reject",
+            post(handle_review_reject_hunk),
+        )
+        .route(
+            "/api/v1/sessions/{id}/review/undo",
+            post(handle_review_undo),
+        )
+        .route(
+            "/api/v1/sessions/{id}/review/comments",
+            get(handle_list_review_comments).post(handle_add_review_comment),
+        )
+        .route(
+            "/api/v1/sessions/{id}/review/send",
+            post(handle_send_review_comments),
+        )
         .route(
             "/api/v1/approvals",
             get(handle_list_approvals).post(handle_create_approval),
@@ -1540,6 +1574,281 @@ async fn handle_save_commands(
     }
 }
 
+async fn handle_git_status(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Read).await {
+        return resp;
+    }
+    match state.manager.session_git_status(&id).await {
+        Ok(st) => Json(st).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+#[derive(Deserialize)]
+struct GitPathsBody {
+    #[serde(default)]
+    paths: Vec<String>,
+}
+
+async fn handle_git_stage(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<GitPathsBody>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Write).await {
+        return resp;
+    }
+    match state.manager.session_git_stage(&id, body.paths).await {
+        Ok(st) => Json(st).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+async fn handle_git_unstage(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<GitPathsBody>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Write).await {
+        return resp;
+    }
+    match state.manager.session_git_unstage(&id, body.paths).await {
+        Ok(st) => Json(st).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+#[derive(Deserialize)]
+struct GitCommitBody {
+    message: String,
+    #[serde(default)]
+    paths: Vec<String>,
+}
+
+async fn handle_git_commit(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<GitCommitBody>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Write).await {
+        return resp;
+    }
+    match state
+        .manager
+        .session_git_commit(&id, body.message, body.paths)
+        .await
+    {
+        Ok(res) => (StatusCode::CREATED, Json(res)).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+#[derive(Deserialize)]
+struct GitLogQuery {
+    path: Option<String>,
+    limit: Option<usize>,
+}
+
+async fn handle_git_log(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Query(q): Query<GitLogQuery>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Read).await {
+        return resp;
+    }
+    match state
+        .manager
+        .session_git_log(&id, q.path, q.limit.unwrap_or(30))
+        .await
+    {
+        Ok(entries) => Json(json!({ "entries": entries })).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+async fn handle_git_blame(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Query(q): Query<FsPathQuery>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Read).await {
+        return resp;
+    }
+    match state.manager.session_git_blame(&id, q.path).await {
+        Ok(lines) => Json(json!({ "lines": lines })).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+async fn handle_git_sync_base(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Write).await {
+        return resp;
+    }
+    match state.manager.session_git_sync_base(&id).await {
+        Ok(res) => Json(res).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+async fn handle_session_review(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Read).await {
+        return resp;
+    }
+    match state.manager.session_review(&id).await {
+        Ok(rev) => Json(rev).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+async fn handle_review_accept_hunk(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath((id, hunk_id)): AxumPath<(String, String)>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Write).await {
+        return resp;
+    }
+    match state.manager.accept_review_hunk(&id, &hunk_id).await {
+        Ok(rev) => Json(rev).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+#[derive(Deserialize, Default)]
+struct RejectHunkQuery {
+    #[serde(default)]
+    pause_agent: bool,
+}
+
+async fn handle_review_reject_hunk(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath((id, hunk_id)): AxumPath<(String, String)>,
+    Query(q): Query<RejectHunkQuery>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Write).await {
+        return resp;
+    }
+    match state
+        .manager
+        .reject_review_hunk(&id, &hunk_id, q.pause_agent)
+        .await
+    {
+        Ok((undo_token, review)) => Json(json!({
+            "undo_token": undo_token,
+            "review": review
+        }))
+        .into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+#[derive(Deserialize)]
+struct ReviewUndoBody {
+    undo_token: String,
+}
+
+async fn handle_review_undo(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<ReviewUndoBody>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Write).await {
+        return resp;
+    }
+    match state.manager.undo_review_hunk(&id, &body.undo_token).await {
+        Ok(rev) => Json(rev).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+#[derive(Deserialize)]
+struct AddReviewCommentBody {
+    path: String,
+    line: usize,
+    text: String,
+}
+
+async fn handle_list_review_comments(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Read).await {
+        return resp;
+    }
+    match state.manager.list_review_comments(&id).await {
+        Ok(comments) => Json(json!({ "comments": comments })).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+async fn handle_add_review_comment(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<AddReviewCommentBody>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Write).await {
+        return resp;
+    }
+    match state
+        .manager
+        .add_review_comment(&id, body.path, body.line, body.text)
+        .await
+    {
+        Ok(comment) => (StatusCode::CREATED, Json(comment)).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+async fn handle_send_review_comments(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Control).await {
+        return resp;
+    }
+    match state.manager.send_review_comments_to_agent(&id).await {
+        Ok(sent_count) => Json(json!({ "sent_count": sent_count })).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
 async fn handle_upsert_agent(
     State(state): State<HttpState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -2153,6 +2462,21 @@ async fn handle_events_ws(
                             let msg = json!({
                                 "seq": seq,
                                 "type": "prefs.changed"
+                            });
+                            if socket.send(Message::Text(msg.to_string().into())).await.is_err() {
+                                break;
+                            }
+                        }
+                        Ok(DaemonEvent::ReviewCommentAdded {
+                            session_id,
+                            comment,
+                        }) => {
+                            let seq = state.event_seq.fetch_add(1, Ordering::Relaxed);
+                            let msg = json!({
+                                "seq": seq,
+                                "type": "review.comment_added",
+                                "session_id": session_id,
+                                "comment": comment
                             });
                             if socket.send(Message::Text(msg.to_string().into())).await.is_err() {
                                 break;

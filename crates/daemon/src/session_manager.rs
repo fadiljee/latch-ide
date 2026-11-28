@@ -40,6 +40,12 @@ use latch_fs_service::{
     FsRawFile, FsReadResponse, FsServiceError, FsStatResponse, FsTreeResponse, FsWriteRequest,
     FsWriteResponse,
 };
+use latch_git_engine::ide::{
+    accept_hunk_patch, build_session_review, commit_local, reject_hunk_patch, stage_paths,
+    sync_base_branch, undo_rejected_hunk, unstage_paths, worktree_blame, worktree_log,
+    worktree_status, GitBlameLine, GitCommitResult, GitLogEntry, GitWorktreeStatus, SessionReview,
+    SyncBaseResult,
+};
 use latch_git_engine::{
     create_worktree, inspect_repo, list_worktrees, merge_check, merge_session, remove_worktree,
     worktree_diff, GitError,
@@ -150,6 +156,30 @@ pub enum DaemonEvent {
     },
     /// Preferensi pengguna IDE diperbarui (`IT-212`).
     PrefsChanged,
+    /// Komentar review ditambahkan (`IT-304`).
+    ReviewCommentAdded {
+        session_id: String,
+        comment: ReviewComment,
+    },
+}
+
+/// Satu komentar inline review untuk dikirim ke agen (`IT-304`, `IDE_API.md` §6).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ReviewComment {
+    /// ID komentar.
+    pub id: String,
+    /// ID sesi target.
+    pub session_id: String,
+    /// Jalur berkas relatif.
+    pub path: String,
+    /// Nomor baris berbasis 1.
+    pub line: usize,
+    /// Isi komentar review (maks 4 KiB).
+    pub text: String,
+    /// Apakah sudah dikirim ke agen.
+    pub sent: bool,
+    /// Waktu pembuatan (UTC epoch ms).
+    pub created_at: i64,
 }
 
 /// Koordinator state sesi daemon (`store` + `git-engine` + `pty-pool` + `sandbox` + `proxy`).
@@ -173,6 +203,7 @@ pub struct SessionManager {
     fs_watcher: Arc<AsyncMutex<SessionWatchTracker>>,
     #[cfg(feature = "ide")]
     active_searches: Arc<AsyncMutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>>,
+    review_comments: Arc<AsyncMutex<HashMap<String, Vec<ReviewComment>>>>,
     exit_tx: mpsc::Sender<PtyExitEvent>,
     trip_tx: mpsc::Sender<TripEvent>,
     events_tx: broadcast::Sender<DaemonEvent>,
@@ -249,6 +280,7 @@ impl SessionManager {
             fs_watcher: Arc::new(AsyncMutex::new(SessionWatchTracker::default())),
             #[cfg(feature = "ide")]
             active_searches: Arc::new(AsyncMutex::new(HashMap::new())),
+            review_comments: Arc::new(AsyncMutex::new(HashMap::new())),
             exit_tx,
             trip_tx,
             events_tx,
@@ -3056,6 +3088,276 @@ impl SessionManager {
             .map_err(|e| ManagerError::Config(format!("commands write task failed: {e}")))?
             .map_err(|e| ManagerError::Config(format!("failed saving commands.toml: {e}")))?;
         Ok(commands)
+    }
+
+    // =========================================================================
+    // Git Lokal Worktree, Review Per-Hunk, Komentar & Sync Base
+    // (`IT-210`, `IT-302`, `IT-304`, `IT-305`, `IT-408`)
+    // =========================================================================
+
+    /// Status Git lokal worktree sesi (`GET /sessions/{sid}/git/status`).
+    pub async fn session_git_status(
+        &self,
+        session_id: &str,
+    ) -> Result<GitWorktreeStatus, ManagerError> {
+        let ses = self.store.get_session(session_id).await?;
+        let proj = self.store.get_project(&ses.project_id).await?;
+        Ok(worktree_status(Path::new(&ses.worktree_path), &proj.default_branch).await?)
+    }
+
+    /// Men-stage berkas di worktree sesi (`POST /sessions/{sid}/git/stage`).
+    pub async fn session_git_stage(
+        &self,
+        session_id: &str,
+        paths: Vec<String>,
+    ) -> Result<GitWorktreeStatus, ManagerError> {
+        let ses = self.store.get_session(session_id).await?;
+        let proj = self.store.get_project(&ses.project_id).await?;
+        stage_paths(Path::new(&ses.worktree_path), &paths).await?;
+        Ok(worktree_status(Path::new(&ses.worktree_path), &proj.default_branch).await?)
+    }
+
+    /// Membatalkan stage berkas di worktree sesi (`POST /sessions/{sid}/git/unstage`).
+    pub async fn session_git_unstage(
+        &self,
+        session_id: &str,
+        paths: Vec<String>,
+    ) -> Result<GitWorktreeStatus, ManagerError> {
+        let ses = self.store.get_session(session_id).await?;
+        let proj = self.store.get_project(&ses.project_id).await?;
+        unstage_paths(Path::new(&ses.worktree_path), &paths).await?;
+        Ok(worktree_status(Path::new(&ses.worktree_path), &proj.default_branch).await?)
+    }
+
+    /// Membuat commit lokal di worktree (hook dimatikan, tanpa push) (`POST /sessions/{sid}/git/commit`).
+    pub async fn session_git_commit(
+        &self,
+        session_id: &str,
+        message: String,
+        paths: Vec<String>,
+    ) -> Result<GitCommitResult, ManagerError> {
+        let ses = self.store.get_session(session_id).await?;
+        let committed = commit_local(Path::new(&ses.worktree_path), &message, &paths).await?;
+        let _ = self
+            .store
+            .insert_audit(AuditEntry {
+                id: None,
+                session_id: Some(ses.id),
+                kind: "git_commit".to_string(),
+                detail: format!(
+                    "commit={}",
+                    &committed.commit_oid[..committed.commit_oid.len().min(12)]
+                ),
+                timestamp: now_ms(),
+            })
+            .await;
+        Ok(committed)
+    }
+
+    /// Riwayat commit worktree (`GET /sessions/{sid}/git/log`).
+    pub async fn session_git_log(
+        &self,
+        session_id: &str,
+        path: Option<String>,
+        limit: usize,
+    ) -> Result<Vec<GitLogEntry>, ManagerError> {
+        let ses = self.store.get_session(session_id).await?;
+        Ok(worktree_log(Path::new(&ses.worktree_path), path.as_deref(), limit).await?)
+    }
+
+    /// Blame ringan satu berkas (`GET /sessions/{sid}/git/blame`).
+    pub async fn session_git_blame(
+        &self,
+        session_id: &str,
+        path: String,
+    ) -> Result<Vec<GitBlameLine>, ManagerError> {
+        let ses = self.store.get_session(session_id).await?;
+        Ok(worktree_blame(Path::new(&ses.worktree_path), &path).await?)
+    }
+
+    /// Menyinkronkan branch worktree dengan branch dasar proyek (`POST /sessions/{sid}/git/sync-base`).
+    pub async fn session_git_sync_base(
+        &self,
+        session_id: &str,
+    ) -> Result<SyncBaseResult, ManagerError> {
+        let ses = self.store.get_session(session_id).await?;
+        let proj = self.store.get_project(&ses.project_id).await?;
+        Ok(sync_base_branch(Path::new(&ses.worktree_path), &proj.default_branch).await?)
+    }
+
+    /// Menghasilkan daftar file + hunk + penanda risiko (`GET /sessions/{sid}/review`).
+    pub async fn session_review(&self, session_id: &str) -> Result<SessionReview, ManagerError> {
+        let ses = self.store.get_session(session_id).await?;
+        let proj = self.store.get_project(&ses.project_id).await?;
+        Ok(build_session_review(Path::new(&ses.worktree_path), &proj.default_branch).await?)
+    }
+
+    /// Menerima (stage) satu hunk berdasarkan `hunk_id` dan mengembalikan review terbaru (`IT-210`).
+    pub async fn accept_review_hunk(
+        &self,
+        session_id: &str,
+        hunk_id: &str,
+    ) -> Result<SessionReview, ManagerError> {
+        let ses = self.store.get_session(session_id).await?;
+        let proj = self.store.get_project(&ses.project_id).await?;
+        let review =
+            build_session_review(Path::new(&ses.worktree_path), &proj.default_branch).await?;
+        let patch = review
+            .files
+            .iter()
+            .flat_map(|f| f.hunks.iter())
+            .find(|h| h.hunk_id == hunk_id)
+            .map(|h| h.patch.clone())
+            .ok_or_else(|| {
+                ManagerError::Store(StoreError::NotFound {
+                    entity: "hunk",
+                    key: hunk_id.to_string(),
+                })
+            })?;
+        accept_hunk_patch(Path::new(&ses.worktree_path), &patch).await?;
+        Ok(build_session_review(Path::new(&ses.worktree_path), &proj.default_branch).await?)
+    }
+
+    /// Menolak (revert) satu hunk; mengembalikan `409` bila sesi masih `Running` kecuali `pause_agent == true`.
+    pub async fn reject_review_hunk(
+        &self,
+        session_id: &str,
+        hunk_id: &str,
+        pause_agent: bool,
+    ) -> Result<(String, SessionReview), ManagerError> {
+        let ses = self.store.get_session(session_id).await?;
+        if ses.status == SessionStatus::Running {
+            if pause_agent {
+                let _ = self.pause_session(&ses.id).await;
+            } else {
+                return Err(ManagerError::InvalidState {
+                    id: ses.id,
+                    status: ses.status,
+                    action: "reject_hunk (pass pause_agent=true or pause session first)",
+                });
+            }
+        }
+        let proj = self.store.get_project(&ses.project_id).await?;
+        let review =
+            build_session_review(Path::new(&ses.worktree_path), &proj.default_branch).await?;
+        let patch = review
+            .files
+            .iter()
+            .flat_map(|f| f.hunks.iter())
+            .find(|h| h.hunk_id == hunk_id)
+            .map(|h| h.patch.clone())
+            .ok_or_else(|| {
+                ManagerError::Store(StoreError::NotFound {
+                    entity: "hunk",
+                    key: hunk_id.to_string(),
+                })
+            })?;
+        let undo_token = reject_hunk_patch(
+            Path::new(&ses.worktree_path),
+            &self.paths.undo_dir(),
+            &patch,
+        )
+        .await?;
+        let updated =
+            build_session_review(Path::new(&ses.worktree_path), &proj.default_branch).await?;
+        Ok((undo_token, updated))
+    }
+
+    /// Mengembalikan hunk yang ditolak memakai `undo_token` (`POST /sessions/{sid}/review/undo`).
+    pub async fn undo_review_hunk(
+        &self,
+        session_id: &str,
+        undo_token: &str,
+    ) -> Result<SessionReview, ManagerError> {
+        let ses = self.store.get_session(session_id).await?;
+        let proj = self.store.get_project(&ses.project_id).await?;
+        undo_rejected_hunk(
+            Path::new(&ses.worktree_path),
+            &self.paths.undo_dir(),
+            undo_token,
+        )
+        .await?;
+        Ok(build_session_review(Path::new(&ses.worktree_path), &proj.default_branch).await?)
+    }
+
+    /// Menambahkan komentar review inline (`POST /sessions/{sid}/review/comments`, maks 4 KiB) (`IT-304`).
+    pub async fn add_review_comment(
+        &self,
+        session_id: &str,
+        path: String,
+        line: usize,
+        text: String,
+    ) -> Result<ReviewComment, ManagerError> {
+        let ses = self.store.get_session(session_id).await?;
+        let clean_text = text.trim().to_string();
+        if clean_text.is_empty() || clean_text.len() > 4 * 1024 {
+            return Err(ManagerError::Config(
+                "review comment must be 1..=4096 bytes".to_string(),
+            ));
+        }
+        let comment = ReviewComment {
+            id: new_id(),
+            session_id: ses.id.clone(),
+            path: path.trim().to_string(),
+            line: line.max(1),
+            text: clean_text,
+            sent: false,
+            created_at: now_ms(),
+        };
+        self.review_comments
+            .lock()
+            .await
+            .entry(ses.id.clone())
+            .or_default()
+            .push(comment.clone());
+        let _ = self.events_tx.send(DaemonEvent::ReviewCommentAdded {
+            session_id: ses.id,
+            comment: comment.clone(),
+        });
+        Ok(comment)
+    }
+
+    /// Daftar komentar review untuk satu sesi (`GET /sessions/{sid}/review/comments`).
+    pub async fn list_review_comments(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<ReviewComment>, ManagerError> {
+        let ses = self.store.get_session(session_id).await?;
+        Ok(self
+            .review_comments
+            .lock()
+            .await
+            .get(&ses.id)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    /// Mengirim komentar review tertunda sebagai pesan terformat ke PTY agen (`POST /sessions/{sid}/review/send`).
+    pub async fn send_review_comments_to_agent(
+        &self,
+        session_id: &str,
+    ) -> Result<usize, ManagerError> {
+        let ses = self.store.get_session(session_id).await?;
+        let mut guard = self.review_comments.lock().await;
+        let list = guard.entry(ses.id.clone()).or_default();
+        let mut body = String::from("Please address the following review feedback:\n");
+        let mut count = 0usize;
+        for c in list.iter_mut() {
+            if !c.sent {
+                body.push_str(&format!("- {}:{}: {}\n", c.path, c.line, c.text));
+                c.sent = true;
+                count += 1;
+            }
+        }
+        drop(guard);
+        if count == 0 {
+            return Ok(0);
+        }
+        let safe = body.replace("\x1b[201~", "");
+        let payload = format!("\x1b[200~{safe}\x1b[201~\r");
+        let handle = self.pty_pool.get(&ses.id).await?;
+        handle.write_input(payload.as_bytes())?;
+        Ok(count)
     }
 }
 

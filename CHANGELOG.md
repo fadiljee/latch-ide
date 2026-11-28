@@ -5,6 +5,9 @@ Format mengikuti [Keep a Changelog](https://keepachangelog.com/id-ID/1.1.0/) dan
 ## [Unreleased]
 
 ### Added
+- **Git Worktree Lokal, Review Per-Hunk (Accept/Reject/Undo), Penanda Risiko, Komentar Review & Sync Base (`IT-210`, `IT-302`, `IT-304`, `IT-305`, `IT-408`):**
+  - `latch-git-engine`: menambahkan modul `ide` (`worktree_status`, `stage_paths`, `unstage_paths`, `commit_local` tanpa hook/remote, `worktree_log`, `worktree_blame`, `sync_base_branch`, `build_session_review` dengan `hunk_id` SHA-256 stabil & deteksi risiko otomatis, serta `accept_hunk_patch`/`reject_hunk_patch`/`undo_rejected_hunk` dengan cadangan patch `0600`).
+  - `latch-daemon`: rute REST `/api/v1/sessions/{id}/git/{status,stage,unstage,commit,log,blame,sync-base}` dan `/api/v1/sessions/{id}/review*` (termasuk komentar inline maks 4 KiB, event WS `review.comment_added`, serta `POST /review/send` yang mengirim umpan balik terformat ke PTY agen).
 - **Pencarian Fuzzy & Regex Linear, Outline Simbol, Preferensi Daemon, Multi-Workspace & Perintah Kustom (`IT-211`, `IT-212`, `IT-301`, `IT-309`, `IT-508`, `IT-509`):**
   - `latch-search`: pencarian nama berkas fuzzy (`search_files`), pencarian teks/regex linear-time non-backtracking (`search_text` dengan batas 2 MiB/berkas, 2000 hasil, timeout 10 detik, dan pembatalan atomik — anti-ReDoS `IT11`), serta ekstraktor outline simbol ringan (`extract_outline`).
   - `latch-daemon` & `latch-core`: rute `/api/v1/sessions/{id}/search/{files,text}`, `DELETE /api/v1/search/{id}`, `GET /api/v1/sessions/{id}/fs/outline`, `GET/PUT /api/v1/prefs` (`prefs.json` `0600` + event WS `prefs.changed`), `GET /api/v1/workspaces`, `GET/PUT /api/v1/commands` (`commands.toml` khusus konfigurasi pengguna `IT10`), serta bagian `[ide]` di `config.toml` (`allow_host_shell = false` bawaan).

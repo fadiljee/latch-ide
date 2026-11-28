@@ -146,7 +146,8 @@ pub fn spawn_notification_dispatcher(
                 | Ok(DaemonEvent::PipelineUpdated { .. })
                 | Ok(DaemonEvent::FsChanged { .. })
                 | Ok(DaemonEvent::SearchResult { .. })
-                | Ok(DaemonEvent::PrefsChanged) => {}
+                | Ok(DaemonEvent::PrefsChanged)
+                | Ok(DaemonEvent::ReviewCommentAdded { .. }) => {}
                 Err(broadcast::error::RecvError::Lagged(skipped)) => {
                     debug!(skipped, "notification dispatcher lagged");
                 }

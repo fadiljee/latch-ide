@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 //! Pengelola repositori Git, worktree terisolasi, diff, simulasi merge-tree, dan merge/discard (T-110..T-114).
 
+pub mod ide;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
