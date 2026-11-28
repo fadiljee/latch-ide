@@ -6,179 +6,63 @@
   </picture>
 </p>
 
-<h1 align="center">Latch (<code>latch-ide</code>)</h1>
+<h1 align="center">Latch IDE</h1>
 
 <p align="center">
-  An <strong>open-source, 100% Rust</strong> AI coding-agent runtime, orchestrator, and Agent IDE foundation in a single binary (<code>latch</code> / <code>latchd</code>).<br />
-  Low memory footprint, <code>git worktree</code> isolation, observable by design, and built without Electron.
+  A lightweight, open-source workspace for running AI coding agents in parallel, safely and under your control.
 </p>
 
 <p align="center">
   <a href="https://github.com/fadiljee/latch-ide/actions/workflows/ci.yml"><img src="https://github.com/fadiljee/latch-ide/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
-  <a href="https://github.com/fadiljee/latch-ide/releases/tag/v1.2.0"><img src="https://img.shields.io/badge/release-v1.2.0-blue" alt="Release: v1.2.0" /></a>
-  <img src="https://img.shields.io/badge/rust-1.85%2B-orange" alt="Rust 1.85+" />
+  <a href="https://github.com/fadiljee/latch-ide/releases/latest"><img src="https://img.shields.io/github/v/release/fadiljee/latch-ide" alt="Latest release" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-green" alt="License: Apache-2.0" /></a>
   <a href="CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen" alt="PRs Welcome" /></a>
 </p>
 
-## Why Latch Exists
+## What is Latch?
 
-Running multiple AI coding CLIs (`claude`, `codex`, `opencode`, `gemini`, or custom agent scripts) in parallel creates four recurring problems:
+Latch lets you run several AI coding agents (Claude, Codex, Gemini, OpenCode, or your own scripts) side by side on the same project without them stepping on each other. Each agent works in its own isolated copy of your code. You watch what they do, review their changes, and decide what gets merged.
 
-1. **High RAM consumption.** Electron/Chromium-based orchestrators consume hundreds of megabytes to gigabytes as concurrent sessions scale.
-2. **Weak isolation.** Autonomous agents without isolated worktrees and OS sandboxing can overwrite each other's changes or access local credentials.
-3. **Lack of visibility.** Real-time token usage, cost tracking, and runaway loop protection are rarely built into local workflows.
-4. **Manual handoffs.** Coordinating multi-agent workflows (plan → implement → verify → review diff → merge) still relies on copy-paste.
+It is a single small app that stays light on memory, so ten agents do not cost you ten browser windows.
 
-## Implementation Status & Roadmap
+## Why Latch?
 
-| Area | Scope | Phase | Status |
-| --- | --- | --- | --- |
-| **Daemon & State** | Single binary (`latch` / `latchd`), UDS JSON-RPC 2.0 (`0600` + `SO_PEERCRED`), single-writer SQLite WAL actor, startup reconciliation & orphan worktree cleanup | `v0.1` | Done |
-| **Git Engine** | `git >= 2.38` check, isolated `git worktree` + `latch/<project>/<short-id>` branches, paginated diffs (including untracked files), `git merge-tree` conflict simulation, idempotent squash/merge & discard | `v0.1` | Done |
-| **PTY Pool** | Parallel `portable-pty` sessions, 1 MiB ring buffer + `0600` rolling logs, 8–16 ms output batching with slow-client backpressure, `vt100` virtual screen + resize, `SIGSTOP`/`SIGCONT`/`kill` | `v0.1` | Done |
-| **TUI & CLI** | Full `clap` CLI (`daemon`, `project`, `run`, `session`, `config`, `tui`) & interactive `ratatui` TUI with ANSI terminal pane, diff view, and merge/kill/discard confirmation modals | `v0.1` | Done |
-| **Workbench Scaffold** | `web/` foundation (Vite + React + strict TypeScript + Tailwind CSS + Zustand + `id`/`en` i18n + ESLint `jsx-a11y` + Vitest + gzipped bundle-size gate) | `I0` | Done |
-| **LLM Proxy & Web PWA** | Local HTTP/SSE reverse proxy (`rustls`), token/cost telemetry (`pricing.toml`), automated circuit breaker (`< 1 s`), REST/WS + embedded Web PWA (`rust-embed`, CSP), HMAC webhooks & SSH remote tunnel | `v0.2` | Done |
-| **OS Sandbox & Approvals** | Linux Landlock filesystem jail (`ABI v1–v5`), toolchain presets, sensitive path denylist, egress domain allowlist, PATH shim, interactive Approval Gate (REST/WS + Web Inbox) | `v0.3` | Done |
-| **DAG Pipelines, Arena, Hibernation & GC** | Declarative `workflow.toml` DAG, strict templating, retry gates, Fan-Out Arena matrix & winner selection, restart recovery, TUI + Web Arena UI, idle hibernation + snapshots, `latch gc` retention | `v1.0` | Done |
-| **Desktop App & Modular UI** | Native **Tauri v2** shell (`desktop/`: `.AppImage` + `.deb`, frameless window + floating control), `@xterm/xterm` PTY terminal, 4 layout styles (`tonal`/`ledger`/`bento`/`glass`) × 2 modes, split panes, command palette, `Git` / `Traffic` / `Usage` panels | `v1.2` | Done |
-| **Full Agent IDE** | CodeMirror 6 editor, fuzzy/regex search, sandboxed LSP, structured agent protocol | `v1.3+` | Planned |
+- **Agents collide.** Parallel agents overwrite each other's work. Latch gives every agent its own workspace.
+- **Agents are trusted too much.** Latch restricts what an agent can read and write, and asks you before risky actions.
+- **Costs are invisible.** Latch shows token usage and spend live, and stops runaway agents automatically.
+- **Handoffs are manual.** Latch chains plan, build, verify and review into one pipeline instead of copy-paste.
 
-## Benchmark Results (`v0.2`)
+## Features
 
-Measured on Linux x86_64 using [`scripts/check-binary.sh`](scripts/check-binary.sh), [`scripts/bench-rss.sh`](scripts/bench-rss.sh), and [`web/scripts/check-bundle-size.mjs`](web/scripts/check-bundle-size.mjs):
+- **Parallel sessions.** Run many agents at once, each in a separate isolated workspace.
+- **Review before merge.** See each agent's changes as a diff, check for conflicts, then accept, reject or discard.
+- **Safety by default.** Agents are sandboxed away from your private files, and sensitive actions need your approval.
+- **Live usage and cost.** Track tokens and spend per session, with budget limits that cut off runaway loops.
+- **Pipelines and arena.** Chain agents into workflows, or run the same task on several agents and pick the best result.
+- **Integrated IDE.** Browse and edit files, search the project, and talk to agents in one window.
+- **Desktop, terminal and browser.** Use the same workspace from a desktop app, a terminal UI, or the web.
+- **Private and local.** Everything runs on your machine. Your code, prompts and keys are not sent anywhere by Latch.
 
-| Metric | Measured | Budget |
-| --- | --- | --- |
-| Release binary size (`latch`, incl. embedded Web PWA) | **8.18 MiB** | `< 30 MiB` |
-| Idle daemon RSS (`VmRSS`) | **13.59 MiB** (`13,916 kB`) | `≤ 25 MiB` |
-| Per-session PTY RAM overhead | **0.25 MiB** (`261 kB` / session) | `≤ 5 MiB` |
-| Initial Web Workbench bundle (gzip) | **75.81 KiB** (`77,630 B`) | `≤ 600 KiB` |
-
-## Workspace Structure
-
-```text
-latch-ide/
-├── Cargo.toml                 # Cargo workspace root + strict lints (#![forbid(unsafe_code)], no unwrap/expect)
-├── cli/                       # Single binary entrypoint `latch` (with `latchd` argv[0] alias)
-├── crates/
-│   ├── core/                  # UUID v7 domain models, config/profile validation, secret redaction, UDS protocol
-│   ├── store/                 # Bundled SQLite (single-writer actor + 0001 migration)
-│   ├── git-engine/            # Worktrees, diffs, merge-tree simulation, squash/merge & discard
-│   ├── pty-pool/              # PTY pool, ring buffer, rolling logs, 8–16 ms batching, vt100
-│   ├── sandbox/               # SandboxProvider trait, LandlockProvider (ABI v1–v5), toolchain presets & denylist
-│   ├── daemon/                # SessionManager, UDS + HTTP/WS server, DAG runner, hibernation, GC, startup reconciliation
-│   ├── tui/                   # Thin ratatui terminal UI client over UDS (sessions, PTY, diff, pipelines & arena)
-│   ├── proxy/                 # Local LLM HTTP/SSE reverse proxy, token/cost telemetry, egress allowlist & circuit breaker
-│   ├── dag/                   # Declarative workflow.toml DAG parser, strict templates, retry gate & fan-out arena
-│   ├── fs-service/            # IDE stub: guarded worktree file service
-│   ├── search/                # IDE stub: fuzzy file index & streaming text search
-│   ├── lsp-host/              # IDE stub: sandboxed LSP host
-│   ├── agent-proto/           # IDE stub: structured agent protocol adapter
-│   └── workbench-api/         # IDE stub: REST/WS routes & scoped token auth
-├── desktop/                   # Native Tauri v2 desktop app (.AppImage & .deb) + floating control window
-├── web/                       # Agent IDE UI (React 19 + TS strict + Tailwind v4 CSS tokens + xterm.js + Zustand)
-└── scripts/                   # Installer (install.sh), binary size/static gate (check-binary.sh), RSS benchmark (bench-rss.sh)
-```
-
-## Quick Start
-
-### Install via `curl` — Zero Setup (Linux x86_64 Desktop App + CLI)
+## Install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/fadiljee/latch-ide/main/scripts/install.sh | sh
-
-# Ready immediately — launch "Latch IDE" from your Linux app menu, or run:
-latch-ide    # opens native Tauri v2 Desktop App (auto-starts daemon & injects token)
-latch        # opens TUI
-latch web    # opens Web Workbench at http://127.0.0.1:7878
 ```
 
-> Installs `latch-ide` (`.AppImage` + `.desktop` menu shortcut), `latch` (and `latchd` symlink) to `~/.local/bin` with SHA-256 verification, updates your shell `PATH`, and starts the daemon automatically. Built-in profiles (`claude`, `codex`, `gemini`, `opencode`, `shell`) work out of the box. Override with `LATCH_VERSION=v1.2.0`, `LATCH_INSTALL_DIR=/usr/local/bin`, or `LATCH_NO_START=1`.
+Then launch **Latch IDE** from your app menu, or run `latch-ide`. Linux x86_64 is supported today.
 
-### Build from Source
+## Learn More
 
-#### Prerequisites
+- [Changelog](CHANGELOG.md): what changed in each release
+- [Compatibility](COMPATIBILITY.md): supported platforms and agent CLIs
+- [Documentation](docs/): requirements, architecture and guides
 
-- Rust stable `>= 1.85` (plus `musl-tools` and target `x86_64-unknown-linux-musl` for static musl builds)
-- `git >= 2.38`
-- Node.js `>= 22` (optional; build-time only for `web/`)
+## Community
 
-### Build & Run
-
-```bash
-# 1. Build the release binary
-cargo build --release -p latch-cli
-# Or build & check size (uses static musl automatically if musl-gcc is installed):
-./scripts/check-binary.sh
-
-# 2. Validate configuration (~/.config/latch/config.toml & agents.toml)
-./target/release/latch config check
-
-# 3. Start the daemon (or pass --foreground for systemd / supervisors)
-./target/release/latch daemon start
-./target/release/latch daemon status
-
-# 4. Register a Git repository
-./target/release/latch project add /path/to/your-repo --name my-repo
-
-# 5. Start an isolated agent session (built-in profiles: `shell`, `sleeper`, or custom entries in agents.toml)
-./target/release/latch run --project my-repo --profile shell --task "Add health endpoint"
-
-# 6. Monitor from the CLI or open the interactive TUI
-./target/release/latch session ls
-./target/release/latch tui
-
-# 7. Inspect diff, run merge-tree conflict check, then squash-merge or discard
-./target/release/latch session diff <session-id>
-./target/release/latch session merge-check <session-id>
-./target/release/latch session merge <session-id> --squash
-# Or hibernate/resume an idle session, or discard:
-./target/release/latch session hibernate <session-id>
-./target/release/latch session resume <session-id>
-./target/release/latch session discard <session-id>
-
-# 8. Run a declarative DAG pipeline & clean up old retention data
-./target/release/latch pipeline run --project my-repo --workflow ./workflow.toml --task "Add metrics"
-./target/release/latch pipeline ls
-./target/release/latch gc --dry-run
-```
-
-> Optional environment overrides for isolated state/testing: `LATCH_CONFIG_DIR`, `LATCH_STATE_DIR`, `LATCH_SOCKET`, and `LATCH_LOG`.
-
-## Development & Verification
-
-```bash
-# Formatting, strict lints, and all unit + end-to-end tests
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo nextest run --workspace
-
-# Binary size gate (< 30 MiB) and daemon RSS budget (<= 25 MiB idle, <= 5 MiB/session)
-./scripts/check-binary.sh
-./scripts/bench-rss.sh
-
-# Workbench frontend checks (lint + jsx-a11y + typecheck + Vitest + <= 600 KiB gzip gate)
-(cd web && npm ci && npm run lint && npm run typecheck && npm run test && npm run build)
-```
-
-## Open Source & Contributing
-
-Latch is an open-source project built in the open — bug reports, architectural feedback, tests, documentation improvements, and pull requests are welcome.
-
-- **Issues & Discussions:** Report bugs or propose features on [GitHub Issues](https://github.com/fadiljee/latch-ide/issues).
-- **Contributing Guide:** See [`CONTRIBUTING.md`](CONTRIBUTING.md) for local setup, coding standards, PR workflow, and required checks.
-- **Security Policy:** See [`SECURITY.md`](SECURITY.md) for private vulnerability disclosure and core security invariants.
-- **Changelog:** See [`CHANGELOG.md`](CHANGELOG.md) for release history and upcoming changes.
-
-## Security
-
-- **Secure by default:** the local UDS listener enforces `0600` socket permissions and `SO_PEERCRED` UID verification; future HTTP/WS listeners bind exclusively to `127.0.0.1`.
-- **Zero secret leakage (`NFR-05`):** daemon logs and SQLite summaries automatically pass through a secret redaction layer (`sk-...`, `AKIA...`, `ghp_...`, `Bearer ...`, `Authorization`, `x-api-key`).
-- **Crash isolation (`NFR-06`):** crashing or `kill -9` on an agent process never brings down the daemon or sibling sessions; daemon restarts reconcile dead PIDs and clean up orphaned worktrees.
-- Please report security vulnerabilities privately as described in [`SECURITY.md`](SECURITY.md).
+- **Contribute:** read the [contribution rules](CONTRIBUTING.md).
+- **Report a security issue:** follow the [security policy](SECURITY.md).
+- **Ask or suggest:** open a [GitHub issue](https://github.com/fadiljee/latch-ide/issues).
 
 ## License
 
-Latch (`latch-ide`) is open-source software licensed under the [Apache License, Version 2.0](LICENSE).
+Latch is licensed under the [Apache License, Version 2.0](LICENSE).

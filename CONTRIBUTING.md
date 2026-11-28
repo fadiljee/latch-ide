@@ -1,98 +1,94 @@
-# Contributing to Latch (`latch-ide`)
+# Contribution Rules
 
-Thank you for your interest in contributing to **Latch**!
+These rules apply to every contribution to Latch (`latch-ide`), from a typo fix to a new feature. Read them before you open a pull request.
 
-## Prerequisites
+## 1. Before You Start
 
-- Latest stable Rust toolchain (`rustup`, MSRV `1.85`), plus `x86_64-unknown-linux-musl` and `musl-tools` for static musl release builds
-- `git >= 2.38` (required for `git merge-tree --write-tree`)
-- Node.js `>= 22` and `npm` (only needed when working on `web/`; not a runtime dependency)
-- Optional tools: `clang` + `lld` (or `mold`), `cargo-nextest`, `cargo-bloat`, `cargo-deny`, `cargo-audit`
-- Linux kernel `>= 5.13` to test full Landlock sandboxing (Phase 3)
+- Open or pick an issue before large changes. Wait for agreement on the approach.
+- Work on one task per pull request. Keep each PR small and focused.
+- Ask a maintainer first before you:
+  - add a large dependency or replace a core library;
+  - change a released API or data schema;
+  - loosen any sandbox or security rule;
+  - add a new target OS or a public network feature.
 
-## Local Setup
+## 2. Branches and Commits
 
-```bash
-git clone https://github.com/fadiljee/latch-ide.git && cd latch-ide
+- Branch from `dev`. Name branches `feat/<area>-<summary>` or `fix/<area>-<summary>`.
+- Open pull requests against `dev`. Only maintainers merge `dev` into `main`.
+- Write commit messages in English using [Conventional Commits](https://www.conventionalcommits.org/): `feat`, `fix`, `docs`, `refactor`, `test`, `perf`, `build`, `ci`, `chore`.
+- Use the affected area as the scope, for example `fix(pty-pool): drop stale subscribers`.
+- Never rewrite shared history or force-push to `main` or `dev`.
 
-# Build and run Rust tests
-cargo build --workspace
-cargo nextest run --workspace
+## 3. Code Rules
 
-# Optional: Workbench frontend
-cd web && npm ci && npm run dev
-```
+- No `unsafe` code unless it is unavoidable. Every `unsafe` block needs a `// SAFETY:` comment.
+- No `unwrap()`, `expect()` or `panic!()` in production code paths. They are allowed in tests.
+- Never block the async runtime. Keep blocking work on dedicated threads.
+- Use bounded channels and bounded buffers.
+- Use structured logging, never `println!`, in library and daemon code.
+- Never log or store API keys, `Authorization` headers, tokens or full prompts.
+- Keep crate dependencies one-way, with no cycles. The core crate depends on no other workspace crate.
+- Keep the application small. Check binary size and memory impact before adding a dependency, and disable unused features.
+- Do not add heavyweight runtimes or UI suites such as Electron or Monaco.
+- Frontend code uses strict TypeScript, accessible markup and keyboard navigation. All user-facing text goes through the translation catalog.
+- Database schema changes go in a new migration. Never edit an old migration.
+- Store time as UTC. Use UUID v7 for IDs unless the docs say otherwise.
 
-## Development Workflow
+## 4. Tests and Checks
 
-1. Open or pick an issue to discuss larger changes before starting.
-2. Create a focused branch (`feat/<crate>-<summary>` or `fix/<crate>-<summary>`). Keep each PR scoped to a single task when possible.
-3. Write tests alongside (or before) implementation changes.
-4. Run all required checks before opening a Pull Request:
+Every change needs tests. A bug fix needs a test that fails before the fix.
+
+All checks must pass before you request review:
 
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo nextest run --workspace
+cargo nextest run --workspace      # or: cargo test --workspace
 
-# Binary size and RAM budget checks
-./scripts/check-binary.sh
-./scripts/bench-rss.sh
-
-# If touching web/
+# only when you touch web/
 (cd web && npm ci && npm run lint && npm run typecheck && npm run test && npm run build)
 ```
 
-5. Update `README.md` if user-facing behavior changed and add an entry under `[Unreleased]` in [`CHANGELOG.md`](CHANGELOG.md).
-6. Open a Pull Request using the template below.
+Do not weaken, skip or delete a test to make CI pass. Tests must also pass on Linux, macOS and Windows unless they are explicitly Linux-only.
 
-## Coding Standards
+## 5. Documentation
 
-### Rust
-- **Safety:** `#![forbid(unsafe_code)]` across all crates unless strictly required in `sandbox` or `pty-pool` (every `unsafe` block must include a `// SAFETY:` justification).
-- **Error handling:** Use `thiserror` in library crates; reserve `anyhow` for application boundaries (`cli/` and `daemon/`). No `.unwrap()`, `.expect()`, or `panic!()` in production paths (enforced via workspace Clippy lints).
-- **Async hygiene:** Never block Tokio worker threads. Synchronous SQLite (`rusqlite`) operations run on the dedicated single-writer actor thread in `latch-store`. All channels must be bounded.
-- **Logging & privacy:** Use `tracing` instead of `println!` in libraries/daemon. Never log `Authorization` headers, API keys, or full prompt payloads (`NFR-05`).
-- **One-way crate dependencies:** `latch-core` must not depend on any other workspace crate; `latch-tui` must only communicate with `latch-daemon` via the UDS client protocol in `latch-core`.
-- **Lean dependencies:** Disable unused `default-features`, avoid pulling `openssl` or `native-tls`, and verify binary size (`< 30 MiB`) and idle RSS (`<= 25 MiB`) impact before adding crates.
+- Update the affected docs in the same pull request.
+- Add an entry under `[Unreleased]` in [`CHANGELOG.md`](CHANGELOG.md).
+- If code and docs disagree, do not pick one silently. Fix both, or propose a decision record.
 
-### Frontend (`web/`)
-- Strict TypeScript (`strict: true`, no unjustified `any`).
-- Feature-sliced layout (`src/features/*`), lazy-loaded heavy panels, no Electron/Monaco/heavy UI suites.
-- Accessibility (`eslint-plugin-jsx-a11y`), keyboard navigability, and i18n catalog strings (`id`/`en`).
-- Keep initial gzipped bundle `<= 600 KiB` (enforced by `web/scripts/check-bundle-size.mjs`).
+## 6. Pull Requests
 
-## Commit Messages
+Every pull request must include:
 
-Follow [Conventional Commits](https://www.conventionalcommits.org/): `feat`, `fix`, `docs`, `refactor`, `test`, `perf`, `build`, `ci`, `chore`.
-Use the crate or subsystem name as the scope, e.g. `feat(pty-pool): add slow-subscriber drop markers`.
+- a summary of what changed and why;
+- the requirement or task IDs it touches (`FR-xx`, `NFR-xx`, `T-xx`);
+- the commands you ran to test it;
+- the impact on memory use and binary size, if any.
 
-## Pull Request Template
+Checklist:
 
-```markdown
-## Summary
-<what changed and why>
-
-## Related Requirements / Tasks
-FR-xx / NFR-xx / T-xx
-
-## Testing
-<commands run and key test cases verified>
-
-## Performance & Size Impact
-Idle RSS: ... MiB | Per-session RSS: ... MiB | Binary size: ... MiB | Notes: ...
-
-## Checklist
-- [ ] `cargo fmt`, `cargo clippy -D warnings`, and tests pass
-- [ ] Affected documentation updated
+- [ ] Format, lint and tests pass
+- [ ] Docs updated
 - [ ] `CHANGELOG.md` updated under `[Unreleased]`
-- [ ] No secrets, API keys, or sensitive headers logged or stored
-```
+- [ ] No secrets, keys or sensitive headers logged or stored
+- [ ] No security or sandbox rule loosened without maintainer approval
 
-## Reporting Security Vulnerabilities
+## 7. Security
 
-Do **not** open a public GitHub issue for security vulnerabilities. Follow the private disclosure process in [`SECURITY.md`](SECURITY.md).
+Never open a public issue or pull request for a vulnerability. Follow [`SECURITY.md`](SECURITY.md).
 
-## Code of Conduct
+Never commit secrets, real `.env` files, or user telemetry. Never run destructive commands such as `rm -rf`, `git clean -fdx` or `git push --force` outside a worktree that Latch created.
 
-Be respectful, direct, and constructive. Critique code and design trade-offs, never people.
+## 8. AI-Assisted Contributions
+
+AI agents may help, but the human author is responsible for the result. Read every line you submit. Agents working in this repository must follow [`AGENTS.md`](AGENTS.md).
+
+## 9. Code of Conduct
+
+Be respectful, direct and constructive. Critique code and design decisions, never people. Maintainers may remove comments or contributions that break this rule.
+
+## 10. License
+
+By contributing, you agree that your work is released under the [Apache License, Version 2.0](LICENSE).
