@@ -1099,7 +1099,7 @@ version = "1.2.0"
 dependencies = [
  "anyhow",
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "futures-util",
  "hmac",
  "latch-agent-proto",
@@ -1146,7 +1146,7 @@ dependencies = [
 name = "latch-fs-service"
 version = "1.2.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "latch-core",
  "proptest",
  "serde",
@@ -1180,7 +1180,7 @@ name = "latch-proxy"
 version = "1.2.0"
 dependencies = [
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "futures-util",
  "latch-core",
