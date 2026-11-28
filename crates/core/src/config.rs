@@ -1062,4 +1062,38 @@ pass_env = ["ANTHROPIC_API_KEY"]
         assert!(agents.profiles.contains_key("claude-api"));
         assert!(agents.profiles.contains_key("codex"));
     }
+
+    #[test]
+    fn validates_all_builtin_agent_profiles_invariants() {
+        let builtins = super::AgentsConfig::with_builtin_defaults();
+        assert!(builtins.profiles.len() >= 15);
+        for (id, profile) in &builtins.profiles {
+            assert!(!profile.command.trim().is_empty(), "empty command for {id}");
+            assert!(
+                profile
+                    .display_name
+                    .as_deref()
+                    .is_some_and(|s| !s.is_empty()),
+                "missing display_name for {id}"
+            );
+            assert!(
+                profile
+                    .description
+                    .as_deref()
+                    .is_some_and(|s| !s.is_empty()),
+                "missing description for {id}"
+            );
+            if profile.category == "coding_agent" {
+                assert_eq!(
+                    profile.auth_mode,
+                    super::AgentAuthMode::OAuth,
+                    "coding agent {id} must default to OAuth"
+                );
+                assert!(
+                    !profile.login_command.is_empty(),
+                    "coding agent {id} must define login_command"
+                );
+            }
+        }
+    }
 }

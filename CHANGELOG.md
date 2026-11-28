@@ -5,6 +5,8 @@ Format mengikuti [Keep a Changelog](https://keepachangelog.com/id-ID/1.1.0/) dan
 ## [Unreleased]
 
 ### Added
+- **Matriks Kompatibilitas CLI Agen (`T-902`, `IT-904`):**
+  - Menambahkan `COMPATIBILITY.md` (dan `docs/compat/agents.md`) yang mendokumentasikan seluruh 13 profil agen coding bawaan (OAuth default, API key proxy, `extra_rw`, dan fitur per mode) beserta tes invarian profil bawaan di `latch-core`.
 - **Pustaka Profil Agen & Konfigurasi Contoh (`T-904`, `FR-07`):**
   - Menambahkan contoh siap pakai yang tervalidasi oleh tes unit: `examples/agents.toml` (OAuth default + API Key proxy), `examples/config.toml`, `examples/mcp.toml`, dan `examples/workflow.toml` (DAG + Fan-Out Arena + retry gate).
 - **Katalog Tarif Model LLM (`T-903`, `R-10`):**
