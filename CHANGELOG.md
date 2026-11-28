@@ -5,6 +5,9 @@ Format mengikuti [Keep a Changelog](https://keepachangelog.com/id-ID/1.1.0/) dan
 ## [Unreleased]
 
 ### Added
+- **Keamanan Rantai Pasok CI (`T-900`, `SECURITY §11`):**
+  - Menambahkan `.github/dependabot.yml` (pembaruan mingguan untuk Cargo workspace, `desktop/src-tauri`, `web` npm, dan GitHub Actions) serta job CI `security-audit` (`cargo deny check`, `cargo audit`, `npm audit --omit=dev --audit-level=high`) dengan jadwal mingguan.
+  - Menambal `RUSTSEC-2026-0459` (CVE-2026-119375) lewat upgrade `rusqlite` `0.32 -> 0.41` (`libsqlite3-sys 0.39.1`, MSRV 1.89), menghapus dependensi `chrono` yang sudah tidak dirawat (`RUSTSEC-2026-0543`) dengan pemformat UTC RFC 3339 tanpa dependensi tambahan, dan mengaktifkan `allow-wildcard-paths = true` di `deny.toml`.
 - **Universal Agent Profiles (OAuth Default & Optional API Key), GitHub CLI, MCP Servers, dan Plugins:**
   - `latch-core`: model & parser `mcp.toml` (`McpServerConfig`, `McpTransport`), `plugins.toml` (`PluginConfig`, `PluginKind`), parser status `gh auth status` tanpa token (`GitHubStatus`, `GitHubRepoItem`), `AgentAuthMode` (`oauth`/`api_key`/`none`), `ApiKeySource` (`env`/`runtime_memory`/`none`), serta profil agen bawaan komprehensif (`antigravity`, `claude`, `codex`, `gemini`, `opencode`, `aider`, `goose`, `amp`, `cline`, `cursor`, `copilot`, `kimi`, `qwen`, `shell`).
   - `latch-daemon`, `latch-pty-pool`, `latch-sandbox`: endpoint REST `/api/v1/agents*` (CRUD profil, runtime API key khusus RAM daemon tanpa persisten ke disk/SQLite, login OAuth interaktif PTY), `/api/v1/integrations/github*` (status `gh`, daftar repo, login OAuth, clone & tambah proyek), `/api/v1/mcp*` (CRUD + manifest runtime `mcp-enabled.json`), `/api/v1/plugins*`, serta tes integrasi keamanan `crates/daemon/tests/integrations_api.rs`.
