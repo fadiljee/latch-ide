@@ -63,7 +63,7 @@ bytes = "1"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json", "ws", "query"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "http2"] }
-rand = "0.8"
+rand = "0.10"
 regex = { version = "1", default-features = false, features = ["std", "perf", "unicode-case"] }
 rust-embed = { version = "8", default-features = false }
 hmac = "0.12"
