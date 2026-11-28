@@ -65,6 +65,10 @@ export interface Catalog {
     screenPreview: string;
     historyTitle: string;
     noMessages: string;
+    bracketedPaste: string;
+    previewToggle: string;
+    previewHeading: string;
+    templatesLabel: string;
   };
   newSession: {
     title: string;
@@ -292,6 +296,10 @@ export const CATALOGS: Record<Locale, Catalog> = {
       screenPreview: "Cuplikan Layar vt100",
       historyTitle: "Riwayat Input Sesi",
       noMessages: "Belum ada input yang dikirim dari panel ini.",
+      bracketedPaste: "Bracketed Paste",
+      previewToggle: "Pratinjau",
+      previewHeading: "Pratinjau Payload PTY",
+      templatesLabel: "Templat Pesan Cepat",
     },
     newSession: {
       title: "Buat Sesi Agen Baru",
@@ -519,6 +527,10 @@ export const CATALOGS: Record<Locale, Catalog> = {
       screenPreview: "vt100 Screen Snapshot",
       historyTitle: "Session Input History",
       noMessages: "No inputs sent from this composer yet.",
+      bracketedPaste: "Bracketed Paste",
+      previewToggle: "Preview",
+      previewHeading: "PTY Payload Preview",
+      templatesLabel: "Quick Prompt Templates",
     },
     newSession: {
       title: "Launch Agent Session",
