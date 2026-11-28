@@ -1,0 +1,130 @@
+# Pustaka contoh profil agen untuk ~/.config/latch/agents.toml (T-904, FR-07).
+# Jangan pernah menaruh nilai API key mentah di berkas ini!
+# Gunakan mode OAuth (bawaan) atau teruskan NAMA variabel lingkungan lewat `api_key_env` / `pass_env`.
+
+# 1. Antigravity CLI (OAuth default)
+[profiles.antigravity]
+display_name = "Antigravity (agy)"
+command = "agy"
+args = []
+auth_mode = "oauth"
+api_key_env = "GEMINI_API_KEY"
+login_command = ["agy"]
+proxy_mode = "bypass"
+proxy_provider = "google"
+extra_rw = ["~/.gemini", "~/.config/antigravity"]
+category = "coding_agent"
+description = "Google Antigravity coding agent CLI via OAuth"
+
+# 2. Claude Code — Mode OAuth (bawaan)
+[profiles.claude]
+display_name = "Claude Code (OAuth)"
+command = "claude"
+args = []
+auth_mode = "oauth"
+api_key_env = "ANTHROPIC_API_KEY"
+login_command = ["claude", "login"]
+proxy_mode = "bypass"
+proxy_provider = "anthropic"
+resume_args = ["--continue"]
+extra_rw = ["~/.claude"]
+category = "coding_agent"
+description = "Anthropic Claude Code CLI with OAuth login"
+
+# 3. Claude Code — Mode API Key + Telemetri Proxy & Circuit Breaker
+[profiles.claude-api]
+display_name = "Claude Code (Proxy API Key)"
+command = "claude"
+args = []
+pass_env = ["ANTHROPIC_API_KEY"]
+auth_mode = "api_key"
+api_key_env = "ANTHROPIC_API_KEY"
+proxy_mode = "injected"
+proxy_provider = "anthropic"
+resume_args = ["--continue"]
+extra_rw = ["~/.claude"]
+category = "coding_agent"
+description = "Claude Code routed through Latch local LLM proxy for cost tracking and budget breaker"
+
+# 4. OpenAI Codex — Mode OAuth
+[profiles.codex]
+display_name = "OpenAI Codex"
+command = "codex"
+args = []
+auth_mode = "oauth"
+api_key_env = "OPENAI_API_KEY"
+login_command = ["codex", "login"]
+proxy_mode = "bypass"
+proxy_provider = "openai"
+extra_rw = ["~/.codex"]
+category = "coding_agent"
+description = "OpenAI Codex CLI via ChatGPT OAuth"
+
+# 5. OpenAI Codex — Mode API Key + Proxy
+[profiles.codex-api]
+display_name = "OpenAI Codex (Proxy API Key)"
+command = "codex"
+args = []
+pass_env = ["OPENAI_API_KEY"]
+auth_mode = "api_key"
+api_key_env = "OPENAI_API_KEY"
+proxy_mode = "injected"
+proxy_provider = "openai"
+extra_rw = ["~/.codex"]
+category = "coding_agent"
+description = "OpenAI Codex CLI routed through Latch local proxy"
+
+# 6. Gemini CLI (OAuth default)
+[profiles.gemini]
+display_name = "Gemini CLI"
+command = "gemini"
+args = []
+auth_mode = "oauth"
+api_key_env = "GEMINI_API_KEY"
+login_command = ["gemini"]
+proxy_mode = "bypass"
+proxy_provider = "google"
+extra_rw = ["~/.gemini"]
+category = "coding_agent"
+description = "Google Gemini CLI"
+
+# 7. OpenCode (Multi-provider)
+[profiles.opencode]
+display_name = "OpenCode"
+command = "opencode"
+args = []
+auth_mode = "oauth"
+api_key_env = "OPENAI_API_KEY"
+login_command = ["opencode", "auth", "login"]
+proxy_mode = "bypass"
+proxy_provider = "openai"
+extra_rw = ["~/.config/opencode", "~/.local/share/opencode"]
+category = "coding_agent"
+description = "OpenCode coding CLI"
+
+# 8. Aider (API Key + Proxy)
+[profiles.aider-api]
+display_name = "Aider (Proxy API Key)"
+command = "aider"
+args = ["--no-auto-commits"]
+pass_env = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY"]
+auth_mode = "api_key"
+api_key_env = "OPENAI_API_KEY"
+proxy_mode = "injected"
+proxy_provider = "openai"
+category = "coding_agent"
+description = "Aider terminal pair programmer with local proxy telemetry"
+
+# 9. Block Goose (Native MCP)
+[profiles.goose]
+display_name = "Goose"
+command = "goose"
+args = []
+auth_mode = "oauth"
+api_key_env = "OPENAI_API_KEY"
+login_command = ["goose", "configure"]
+proxy_mode = "bypass"
+proxy_provider = "openai"
+extra_rw = ["~/.config/goose"]
+category = "coding_agent"
+description = "Block Goose extensible developer agent"

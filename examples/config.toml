@@ -1,0 +1,29 @@
+# Contoh konfigurasi utama daemon untuk ~/.config/latch/config.toml (T-904).
+
+[daemon]
+# Bind lokal saja (loopback); untuk remote gunakan `latch remote user@host` atau Tailscale.
+http_bind = "127.0.0.1:7878"
+proxy_bind = "127.0.0.1:0"
+worker_threads = 2
+log_level = "info"
+
+[limits]
+max_sessions = 4
+pty_ring_bytes = 1048576
+pty_batch_ms = 12
+max_session_budget_usd = 5.0
+max_consecutive_errors = 5
+idle_hibernate_minutes = 30
+
+[sandbox]
+# Set `true` di Linux >= 5.13 untuk menolak start sesi bila Landlock tidak tersedia.
+require_sandbox = false
+presets = ["system", "rust", "node", "python", "git"]
+extra_ro = []
+extra_rw = []
+deny_paths = ["~/.ssh", "~/.aws", "~/.gnupg"]
+
+[retention]
+telemetry_days = 30
+audit_days = 90
+pty_log_days = 14

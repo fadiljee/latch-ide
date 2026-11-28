@@ -1,0 +1,32 @@
+# Contoh konfigurasi server MCP untuk ~/.config/latch/mcp.toml (T-904).
+# `env_keys` HANYA menyimpan nama variabel lingkungan, jangan pernah isi nilai rahasianya!
+
+[servers.github]
+id = "github"
+name = "GitHub MCP"
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-github"]
+env_keys = ["GITHUB_PERSONAL_ACCESS_TOKEN"]
+enabled = true
+description = "Issues, pull requests, and repository search via GitHub API"
+
+[servers.filesystem]
+id = "filesystem"
+name = "Filesystem MCP"
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
+env_keys = []
+enabled = true
+description = "Structured workspace file access"
+
+[servers.playwright]
+id = "playwright"
+name = "Playwright Browser MCP"
+transport = "stdio"
+command = "npx"
+args = ["-y", "@playwright/mcp@latest"]
+env_keys = []
+enabled = false
+description = "Headless browser inspection and UI testing"

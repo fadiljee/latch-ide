@@ -558,4 +558,13 @@ github.com
         assert_eq!(status.protocol.as_deref(), Some("https"));
         assert_eq!(status.scopes, vec!["gist", "read:org", "repo", "workflow"]);
     }
+
+    #[test]
+    fn validates_shipped_example_mcp_toml() {
+        let cfg: McpConfig = toml::from_str(include_str!("../../../examples/mcp.toml")).unwrap();
+        assert!(cfg.servers.contains_key("github"));
+        for srv in cfg.servers.values() {
+            validate_mcp_server(srv).unwrap();
+        }
+    }
 }

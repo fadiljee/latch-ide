@@ -5,6 +5,8 @@ Format mengikuti [Keep a Changelog](https://keepachangelog.com/id-ID/1.1.0/) dan
 ## [Unreleased]
 
 ### Added
+- **Pustaka Profil Agen & Konfigurasi Contoh (`T-904`, `FR-07`):**
+  - Menambahkan contoh siap pakai yang tervalidasi oleh tes unit: `examples/agents.toml` (OAuth default + API Key proxy), `examples/config.toml`, `examples/mcp.toml`, dan `examples/workflow.toml` (DAG + Fan-Out Arena + retry gate).
 - **Katalog Tarif Model LLM (`T-903`, `R-10`):**
   - Memperbarui tabel harga bawaan `PricingTable` di `latch-core` (24 model termasuk `gpt-5`, `o3`/`o4-mini`, `claude-opus-4-1`/`claude-sonnet-4-5`, `gemini-2.5-*`, `deepseek-*`, `kimi-k2`, `qwen3-coder`), validasi angka finit, dan contoh `examples/pricing.toml` tervalidasi oleh tes unit.
 - **Kompatibilitas OS macOS & Windows di CI (`T-901`, `NFR-07`):**
