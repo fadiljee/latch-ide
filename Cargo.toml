@@ -68,7 +68,7 @@ regex = { version = "1", default-features = false, features = ["std", "perf", "u
 rust-embed = { version = "8", default-features = false }
 hmac = "0.12"
 landlock = "0.4"
-sha2 = "0.10"
+sha2 = "0.11"
 subtle = "2"
 proptest = "1"
 tempfile = "3"
