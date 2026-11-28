@@ -5,6 +5,8 @@ Format mengikuti [Keep a Changelog](https://keepachangelog.com/id-ID/1.1.0/) dan
 ## [Unreleased]
 
 ### Added
+- **Grid Terminal 2×2 & Jeda Render Tak Terlihat (`IT-110`, `FR-I11`, `FR-I60`):**
+  - `web/`: menambahkan `TerminalGrid` 2×2 (maksimal 4 sesi aktif), mode tata letak 3 arah (`Single` / `Split` / `Grid 2×2`) di `StatusBar` & `CommandPalette`, penguncian input khusus pada sel fokus, serta jeda render `TerminalView` saat tab/elemen tidak terlihat (`visibilitychange` + `IntersectionObserver`) dengan penyangga terbatas 64 KiB dan resync otomatis, lengkap dengan unit test `TerminalGrid.test.tsx`.
 - **Pengiriman Pesan PTY Bracketed Paste & Templat Profil (`IT-113`, `FR-I20`):**
   - `web/`: `Composer` mendukung input multi-baris, pembungkus *bracketed paste* (`ESC[200~...ESC[201~`) dengan sanitasi anti-breakout, templat cepat per profil agen (`claude`, `codex`, `antigravity`, `aider`, `shell`, dll.), serta pratinjau payload aman sebelum dikirim, lengkap dengan unit test Vitest.
 - **Peluncur Aman `latch ide` (`IT-103`, `FR-I102`):**

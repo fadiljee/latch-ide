@@ -45,6 +45,10 @@ export interface Catalog {
     diffTab: string;
     splitToggle: string;
     singlePane: string;
+    gridMode: string;
+    focusedCell: string;
+    clickToFocus: string;
+    expandPane: string;
     sidePanelToggle: string;
     emptyTitle: string;
     emptyBody: string;
@@ -217,6 +221,7 @@ export interface Catalog {
     toggleSidebar: string;
     toggleSidePanel: string;
     toggleSplit: string;
+    openGrid: string;
     openNewSession: string;
     openAgents: string;
     openPlugins: string;
@@ -276,6 +281,10 @@ export const CATALOGS: Record<Locale, Catalog> = {
       diffTab: "Diff",
       splitToggle: "Split Pane",
       singlePane: "Satu Pane",
+      gridMode: "Grid 2×2",
+      focusedCell: "Fokus",
+      clickToFocus: "Klik fokus",
+      expandPane: "Fokus Penuh",
       sidePanelToggle: "Panel Kanan",
       emptyTitle: "Pilih sesi di sidebar atau buat sesi baru",
       emptyBody: "Setiap sesi berjalan di git worktree terisolasi dengan proxy telemetri dan sandbox.",
@@ -449,7 +458,8 @@ export const CATALOGS: Record<Locale, Catalog> = {
       empty: "Tidak ada perintah yang cocok.",
       toggleSidebar: "Buka/Tutup Sidebar Sesi",
       toggleSidePanel: "Buka/Tutup Panel Kanan",
-      toggleSplit: "Aktifkan/Matikan Split Pane",
+      toggleSplit: "Ganti Tata Letak Pane (Satu / Split / Grid 2×2)",
+      openGrid: "Buka Grid Terminal 2×2",
       openNewSession: "Buat Sesi Agen Baru",
       openAgents: "Kelola Agen (OAuth & API Key)",
       openPlugins: "Buka Integrasi (GitHub, MCP, Plugin)",
@@ -507,6 +517,10 @@ export const CATALOGS: Record<Locale, Catalog> = {
       diffTab: "Diff",
       splitToggle: "Split Pane",
       singlePane: "Single Pane",
+      gridMode: "2×2 Grid",
+      focusedCell: "Focused",
+      clickToFocus: "Click to focus",
+      expandPane: "Focus Pane",
       sidePanelToggle: "Side Panel",
       emptyTitle: "Select a session or launch a new one",
       emptyBody: "Each session runs in an isolated git worktree with proxy telemetry and sandboxing.",
@@ -680,7 +694,8 @@ export const CATALOGS: Record<Locale, Catalog> = {
       empty: "No matching commands.",
       toggleSidebar: "Toggle Session Sidebar",
       toggleSidePanel: "Toggle Side Panel",
-      toggleSplit: "Toggle Split Pane",
+      toggleSplit: "Cycle Pane Layout (Single / Split / 2×2 Grid)",
+      openGrid: "Open 2×2 Terminal Grid",
       openNewSession: "New Agent Session",
       openAgents: "Manage Agents (OAuth & API Key)",
       openPlugins: "Open Integrations (GitHub, MCP, Plugins)",

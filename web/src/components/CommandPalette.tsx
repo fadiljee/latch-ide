@@ -26,6 +26,7 @@ export function CommandPalette() {
   const setActiveRoute = useUiStore((s) => s.setActiveRoute);
   const locale = useUiStore((s) => s.locale);
   const toggleSplit = useLayoutStore((s) => s.toggleSplit);
+  const setSplitMode = useLayoutStore((s) => s.setSplitMode);
   const setActiveSession = useLayoutStore((s) => s.setActiveSession);
   const byId = useSessionsStore((s) => s.byId);
   const order = useSessionsStore((s) => s.order);
@@ -65,6 +66,14 @@ export function CommandPalette() {
         id: "toggle-split",
         label: t.palette.toggleSplit,
         run: () => toggleSplit(),
+      },
+      {
+        id: "open-grid",
+        label: t.palette.openGrid,
+        run: () => {
+          setActiveRoute("workspace");
+          setSplitMode("grid");
+        },
       },
       {
         id: "open-agents",
@@ -111,6 +120,7 @@ export function CommandPalette() {
     setActiveRoute,
     setActiveSession,
     setNewSessionOpen,
+    setSplitMode,
     t.palette,
     toggleSidePanel,
     toggleSidebar,
