@@ -2,8 +2,11 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, dev]
   pull_request:
+  schedule:
+    # Audit berkala tiap Senin 04:00 UTC untuk mendeteksi CVE baru (T-900)
+    - cron: "0 4 * * 1"
 
 env:
   CARGO_TERM_COLOR: always
@@ -64,3 +67,25 @@ jobs:
       - run: npm run typecheck
       - run: npm run test
       - run: npm run build
+
+  security-audit:
+    name: Supply-chain audit (cargo-deny, cargo-audit, npm audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny,cargo-audit
+      - name: Check licenses, bans & advisories (cargo-deny)
+        run: cargo deny check
+      - name: Check RustSec advisories (cargo-audit)
+        run: cargo audit
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Check production npm advisories
+        working-directory: web
+        run: npm audit --omit=dev --audit-level=high
