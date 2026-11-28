@@ -308,3 +308,19 @@ fn is_ancestor(target: &str, from: &str, by_id: &HashMap<&str, &StepSpec>) -> bo
     }
     false
 }
+
+#[cfg(test)]
+mod tests {
+    use super::parse_and_validate_workflow;
+
+    #[test]
+    fn validates_shipped_example_workflow_toml() {
+        let (spec, order) =
+            parse_and_validate_workflow(include_str!("../../../examples/workflow.toml")).unwrap();
+        assert_eq!(spec.workflow.name, "arena-implement-and-verify");
+        assert_eq!(
+            order,
+            vec!["arena_impl", "review_and_polish", "final_verify"]
+        );
+    }
+}

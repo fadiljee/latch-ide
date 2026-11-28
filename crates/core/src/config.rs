@@ -336,6 +336,7 @@ impl Default for RetentionConfig {
 pub enum AgentAuthMode {
     /// Autentikasi OAuth native CLI agen (default; berjalan langsung lewat `proxy_mode = "bypass"`).
     #[default]
+    #[serde(rename = "oauth", alias = "o_auth")]
     OAuth,
     /// Autentikasi memakai API key (env var / memori sesi daemon; memakai proxy lokal bila provider tersedia).
     ApiKey,
@@ -1040,5 +1041,25 @@ pass_env = ["ANTHROPIC_API_KEY"]
             syntax_err,
             ConfigError::Toml { line: 2, ref field, .. } if field == "worker_threads"
         ));
+    }
+
+    #[test]
+    fn validates_shipped_example_configs() {
+        let cfg = parse_latch_config_str(
+            include_str!("../../../examples/config.toml"),
+            "examples/config.toml",
+        )
+        .unwrap();
+        assert_eq!(cfg.limits.max_sessions, 4);
+
+        let agents = parse_agents_config_str(
+            include_str!("../../../examples/agents.toml"),
+            "examples/agents.toml",
+        )
+        .unwrap();
+        assert!(agents.profiles.contains_key("antigravity"));
+        assert!(agents.profiles.contains_key("claude"));
+        assert!(agents.profiles.contains_key("claude-api"));
+        assert!(agents.profiles.contains_key("codex"));
     }
 }

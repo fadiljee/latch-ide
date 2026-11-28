@@ -1,0 +1,35 @@
+# Contoh pipeline DAG + Retry Gate + Fan-Out Arena untuk Latch (`T-904`).
+# Jalankan lewat: `latch pipeline run --project <nama> --workflow examples/workflow.toml --task "..."`
+
+[workflow]
+name = "arena-implement-and-verify"
+max_budget_usd = 3.0
+max_parallel = 2
+description = "Bandingkan dua agen secara paralel, verifikasi dengan tes, dan pilih kandidat termurah yang lolos"
+
+[circuit_breaker]
+max_consecutive_errors = 4
+max_session_budget_usd = 1.5
+
+[[steps]]
+id = "arena_impl"
+type = "fanout"
+profiles = ["claude", "codex"]
+prompt = "Kerjakan tugas berikut beserta unit test: {{task}}"
+verify_command = "cargo test --workspace"
+select = "cheapest_passing"
+
+[[steps]]
+id = "review_and_polish"
+type = "agent"
+depends_on = ["arena_impl"]
+profile = "antigravity"
+prompt = "Tinjau perubahan pemenang arena untuk tugas: {{task}} dan pastikan tidak ada peringatan clippy."
+
+[[steps]]
+id = "final_verify"
+type = "shell"
+depends_on = ["review_and_polish"]
+command = "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings"
+on_fail_retry_step = "review_and_polish"
+max_retries = 2
