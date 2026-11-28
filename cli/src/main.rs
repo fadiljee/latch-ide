@@ -45,6 +45,8 @@ enum Commands {
     },
     /// Jalankan satu sesi agen pada worktree baru.
     Run(RunArgs),
+    /// Luncurkan Antigravity CLI (`agy`) terisolasi di worktree proyek dan langsung attach PTY.
+    Agy(AgyArgs),
     /// Kelola dan tinjau sesi agen.
     Session {
         #[command(subcommand)]
@@ -164,10 +166,67 @@ struct RunArgs {
     project: String,
     #[arg(long)]
     profile: String,
-    #[arg(long)]
+    #[arg(long, default_value = "")]
     task: String,
     #[arg(long)]
     base_ref: Option<String>,
+    /// Argumen CLI tambahan untuk profil agen (dapat diulang).
+    #[arg(long = "arg")]
+    extra_args: Vec<String>,
+}
+
+#[derive(Args)]
+struct AgyArgs {
+    /// Nama atau ID proyek (bawaan: auto-daftarkan repositori Git direktori saat ini).
+    #[arg(long)]
+    project: Option<String>,
+    /// Mode eksekusi Antigravity CLI (`auto`, `accept-edits`, `plan`).
+    #[arg(long)]
+    mode: Option<String>,
+    /// Tingkat penalaran (`low`, `medium`, `high`, `xhigh`, `max`).
+    #[arg(long)]
+    effort: Option<String>,
+    /// ID model Antigravity CLI (mis. `gemini-4-neon-high`, `claude-opus-5-5-high`).
+    #[arg(long)]
+    model: Option<String>,
+    /// Lanjutkan percakapan terakhir (`--continue`).
+    #[arg(short = 'c', long = "continue")]
+    continue_last: bool,
+    /// Ref branch dasar opsional.
+    #[arg(long)]
+    base_ref: Option<String>,
+    /// Mulai di latar belakang tanpa langsung attach terminal PTY.
+    #[arg(long)]
+    detach: bool,
+    /// Prompt awal opsional (kosong = mode interaktif `agy`).
+    #[arg(trailing_var_arg = true)]
+    task: Vec<String>,
+}
+
+fn build_agy_extra_args(args: &AgyArgs) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(ref mode) = args.mode {
+        if !mode.trim().is_empty() {
+            out.push("--mode".to_string());
+            out.push(mode.trim().to_string());
+        }
+    }
+    if let Some(ref effort) = args.effort {
+        if !effort.trim().is_empty() {
+            out.push("--effort".to_string());
+            out.push(effort.trim().to_string());
+        }
+    }
+    if let Some(ref model) = args.model {
+        if !model.trim().is_empty() {
+            out.push("--model".to_string());
+            out.push(model.trim().to_string());
+        }
+    }
+    if args.continue_last {
+        out.push("--continue".to_string());
+    }
+    out
 }
 
 #[derive(Subcommand)]
@@ -558,6 +617,7 @@ fn run_async_client(paths: RuntimePaths, cmd: Commands) -> anyhow::Result<()> {
                         profile: args.profile,
                         task: args.task,
                         base_ref: args.base_ref,
+                        extra_args: args.extra_args,
                     })
                     .await?;
                 println!(
@@ -567,6 +627,56 @@ fn run_async_client(paths: RuntimePaths, cmd: Commands) -> anyhow::Result<()> {
                     s.branch_name,
                     s.worktree_path
                 );
+            }
+            Commands::Agy(args) => {
+                let project_key = match args.project.clone() {
+                    Some(p) if !p.trim().is_empty() => p,
+                    _ => {
+                        let cwd = std::env::current_dir()?;
+                        let abs = std::fs::canonicalize(&cwd).unwrap_or(cwd);
+                        match client
+                            .project_add(&ProjectAddParams {
+                                repo_path: abs.to_string_lossy().to_string(),
+                                name: None,
+                                default_branch: None,
+                            })
+                            .await
+                        {
+                            Ok(proj) => proj.id,
+                            Err(_) => {
+                                let list = client.project_list().await?;
+                                list.into_iter()
+                                    .next()
+                                    .map(|p| p.id)
+                                    .ok_or_else(|| {
+                                        anyhow::anyhow!(
+                                            "no Git project found; run inside a Git repo or pass --project <name>"
+                                        )
+                                    })?
+                            }
+                        }
+                    }
+                };
+                let extra_args = build_agy_extra_args(&args);
+                let task = args.task.join(" ");
+                let s = client
+                    .session_run(&SessionRunParams {
+                        project: project_key,
+                        profile: "antigravity".to_string(),
+                        task,
+                        base_ref: args.base_ref,
+                        extra_args,
+                    })
+                    .await?;
+                println!(
+                    "Antigravity CLI (agy) aktif: id={} short={} branch={}",
+                    s.id,
+                    short_id(&s.id),
+                    s.branch_name
+                );
+                if !args.detach {
+                    attach_cli_pty(&client, &s.id).await?;
+                }
             }
             Commands::Session { action } => handle_session_cmd(&client, action).await?,
             Commands::Pipeline { action } => handle_pipeline_cmd(&client, action).await?,
@@ -980,7 +1090,11 @@ async fn attach_cli_pty(client: &UdsClient, session_id: &str) -> anyhow::Result<
 
 #[cfg(test)]
 mod tests {
-    use super::{build_workbench_fragment_url, parse_duration_secs};
+    use clap::Parser;
+
+    use super::{
+        build_agy_extra_args, build_workbench_fragment_url, parse_duration_secs, Cli, Commands,
+    };
 
     #[test]
     fn builds_fragment_url_without_query_token() {
@@ -997,5 +1111,39 @@ mod tests {
         assert_eq!(parse_duration_secs("7d").unwrap(), 604_800);
         assert!(parse_duration_secs("0d").is_err());
         assert!(parse_duration_secs("bad").is_err());
+    }
+
+    #[test]
+    fn parses_latch_agy_subcommand_flags() {
+        let cli = Cli::try_parse_from([
+            "latch",
+            "agy",
+            "--mode",
+            "plan",
+            "--effort",
+            "high",
+            "--model",
+            "gemini-4-neon-high",
+            "--continue",
+            "audit",
+            "tests",
+        ])
+        .unwrap();
+        assert!(matches!(cli.command, Some(Commands::Agy(_))));
+        if let Some(Commands::Agy(args)) = cli.command {
+            assert_eq!(
+                build_agy_extra_args(&args),
+                vec![
+                    "--mode",
+                    "plan",
+                    "--effort",
+                    "high",
+                    "--model",
+                    "gemini-4-neon-high",
+                    "--continue"
+                ]
+            );
+            assert_eq!(args.task.join(" "), "audit tests");
+        }
     }
 }

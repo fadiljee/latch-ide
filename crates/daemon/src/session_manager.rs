@@ -7,8 +7,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use latch_core::config::{
-    resolve_command_in_path, save_agents_config, AgentAuthMode, AgentProfile, AgentProfileStatus,
-    AgentsConfig, ApiKeySource, LatchConfig, RuntimePaths,
+    parse_agy_models_output, resolve_command_in_path, save_agents_config, AgentAuthMode,
+    AgentProfile, AgentProfileStatus, AgentsConfig, AntigravityCliInfo, ApiKeySource, LatchConfig,
+    RuntimePaths,
 };
 use latch_core::id::{new_id, now_ms, short_id};
 use latch_core::integrations::{
@@ -837,6 +838,21 @@ impl SessionManager {
             return Err(ManagerError::MaxSessionsReached(
                 self.config.limits.max_sessions,
             ));
+        }
+
+        if params.extra_args.len() > 16 {
+            return Err(ManagerError::Config(
+                "extra_args exceeds maximum of 16 arguments".to_string(),
+            ));
+        }
+        for arg in &params.extra_args {
+            if arg.len() > 256 || arg.chars().any(|c| matches!(c, '\0' | '\r' | '\n')) {
+                return Err(ManagerError::Config(
+                    "invalid extra_args entry: control characters or length > 256 not allowed"
+                        .to_string(),
+                ));
+            }
+            profile.args.push(arg.clone());
         }
 
         let project = self.store.get_project(&params.project).await?;
@@ -2002,6 +2018,7 @@ impl SessionManager {
         let login_profile = AgentProfile {
             command: cmd,
             args,
+            task_arg: None,
             auth_mode: AgentAuthMode::OAuth,
             proxy_mode: ProxyMode::Bypass,
             ..profile
@@ -2012,12 +2029,81 @@ impl SessionManager {
                 profile: id.to_string(),
                 task: format!("OAuth Login: {display}"),
                 base_ref: None,
+                extra_args: Vec::new(),
             },
             login_profile,
             None,
             None,
         )
         .await
+    }
+
+    /// Memeriksa ketersediaan, versi, dan daftar model Antigravity CLI (`agy`) untuk peluncur IDE.
+    pub async fn antigravity_cli_info(&self) -> AntigravityCliInfo {
+        let modes = vec![
+            "auto".to_string(),
+            "accept-edits".to_string(),
+            "plan".to_string(),
+        ];
+        let efforts = vec![
+            "low".to_string(),
+            "medium".to_string(),
+            "high".to_string(),
+            "xhigh".to_string(),
+            "max".to_string(),
+        ];
+        let Some(agy_path) = resolve_command_in_path("agy") else {
+            return AntigravityCliInfo {
+                installed: false,
+                command_path: None,
+                version: None,
+                acp_supported: false,
+                modes,
+                efforts,
+                models: Vec::new(),
+            };
+        };
+        let command_path = Some(agy_path.to_string_lossy().to_string());
+
+        let version = match tokio::time::timeout(
+            Duration::from_secs(3),
+            tokio::process::Command::new(&agy_path)
+                .arg("--version")
+                .output(),
+        )
+        .await
+        {
+            Ok(Ok(out)) if out.status.success() => {
+                let txt = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                (!txt.is_empty()).then_some(txt)
+            }
+            _ => None,
+        };
+
+        let models = match tokio::time::timeout(
+            Duration::from_secs(5),
+            tokio::process::Command::new(&agy_path)
+                .arg("models")
+                .output(),
+        )
+        .await
+        {
+            Ok(Ok(out)) if out.status.success() => {
+                let txt = String::from_utf8_lossy(&out.stdout);
+                parse_agy_models_output(&txt)
+            }
+            _ => Vec::new(),
+        };
+
+        AntigravityCliInfo {
+            installed: true,
+            command_path,
+            version,
+            acp_supported: true,
+            modes,
+            efforts,
+            models,
+        }
     }
 
     async fn resolve_project_for_interactive(
@@ -2177,6 +2263,7 @@ impl SessionManager {
                 profile: "github-oauth".to_string(),
                 task: "GitHub OAuth Login (gh auth login --web)".to_string(),
                 base_ref: None,
+                extra_args: Vec::new(),
             },
             gh_profile,
             None,

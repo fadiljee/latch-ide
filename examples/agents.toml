@@ -7,12 +7,15 @@
 display_name = "Antigravity (agy)"
 command = "agy"
 args = []
+task_arg = "--prompt-interactive"
 auth_mode = "oauth"
 api_key_env = "GEMINI_API_KEY"
 login_command = ["agy"]
 proxy_mode = "bypass"
 proxy_provider = "google"
+resume_args = ["--continue"]
 extra_rw = ["~/.gemini", "~/.config/antigravity"]
+extra_ro = ["~/.local/bin"]
 category = "coding_agent"
 description = "Google Antigravity coding agent CLI via OAuth"
 

@@ -2,6 +2,7 @@ import { Button } from "../components/ui/Button";
 import { IconButton } from "../components/ui/IconButton";
 import { Kbd } from "../components/Kbd";
 import { UsagePill } from "../components/UsagePill";
+import { launchAntigravityCliQuick } from "../features/sessions/quick-launch";
 import { CATALOGS } from "../lib/i18n/catalog";
 import { formatShortcut } from "../lib/keys";
 import { cn } from "../lib/cn";
@@ -102,6 +103,14 @@ export function TitleBar() {
           <span>Search</span>
           <Kbd keys={formatShortcut("Cmd+K", "Ctrl+K")} />
         </button>
+
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => void launchAntigravityCliQuick()}
+        >
+          {t.workspace.openAntigravityCli}
+        </Button>
 
         <Button variant="primary" size="sm" onClick={() => setNewSessionOpen(true)}>
           {t.workspace.newSessionCta}

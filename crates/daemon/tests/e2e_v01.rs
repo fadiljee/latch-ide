@@ -153,6 +153,7 @@ async fn e2e_three_parallel_sessions_crash_isolation_and_restart_reconcile() {
             profile: "writer-a".to_string(),
             task: "task-a sk-test-CANARY11223344".to_string(),
             base_ref: None,
+            extra_args: Vec::new(),
         })
         .await
         .unwrap();
@@ -162,6 +163,7 @@ async fn e2e_three_parallel_sessions_crash_isolation_and_restart_reconcile() {
             profile: "writer-b".to_string(),
             task: "task-b".to_string(),
             base_ref: None,
+            extra_args: Vec::new(),
         })
         .await
         .unwrap();
@@ -171,6 +173,7 @@ async fn e2e_three_parallel_sessions_crash_isolation_and_restart_reconcile() {
             profile: "sleeper".to_string(),
             task: "task-c".to_string(),
             base_ref: None,
+            extra_args: Vec::new(),
         })
         .await
         .unwrap();

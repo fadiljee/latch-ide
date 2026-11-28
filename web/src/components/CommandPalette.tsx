@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { launchAntigravityCliQuick } from "../features/sessions/quick-launch";
 import { CATALOGS } from "../lib/i18n/catalog";
 import { useLayoutStore } from "../state/layout";
 import { useSessionsStore } from "../state/sessions";
@@ -44,6 +45,13 @@ export function CommandPalette() {
 
   const actions = useMemo<PaletteAction[]>(() => {
     const base: PaletteAction[] = [
+      {
+        id: "open-antigravity-cli",
+        label: t.palette.openAntigravityCli,
+        run: () => {
+          void launchAntigravityCliQuick();
+        },
+      },
       {
         id: "new-session",
         label: t.palette.openNewSession,

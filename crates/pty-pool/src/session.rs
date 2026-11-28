@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use latch_core::config::AgentProfile;
+use latch_core::config::{resolve_command_in_path, AgentProfile, RuntimePaths};
 use latch_core::id::now_ms;
 use latch_core::sandbox::{SandboxPolicy, SandboxProvider};
 #[cfg(unix)]
@@ -336,8 +336,11 @@ impl PtyPool {
     ) -> Result<PtySessionHandle, PtyError> {
         std::fs::create_dir_all(&req.isolated_tmp)?;
 
+        let resolved_program = resolve_command_in_path(&req.profile.command)
+            .unwrap_or_else(|| PathBuf::from(&req.profile.command));
+
         // Validasi kebijakan sandbox lewat Command persiapan sebelum spawn PTY
-        let mut probe_cmd = std::process::Command::new(&req.profile.command);
+        let mut probe_cmd = std::process::Command::new(&resolved_program);
         sandbox.prepare(&req.sandbox_policy, &mut probe_cmd)?;
 
         let pty_system = native_pty_system();
@@ -351,8 +354,16 @@ impl PtyPool {
             })
             .map_err(|e| PtyError::Spawn(e.to_string()))?;
 
-        let mut cmd = CommandBuilder::new(&req.profile.command);
+        let mut cmd = CommandBuilder::new(&resolved_program);
         cmd.args(&req.profile.args);
+        if let Some(ref flag) = req.profile.task_arg {
+            let trimmed_flag = flag.trim();
+            let trimmed_task = req.task.trim();
+            if !trimmed_flag.is_empty() && !trimmed_task.is_empty() {
+                cmd.arg(trimmed_flag);
+                cmd.arg(trimmed_task);
+            }
+        }
         cmd.cwd(&req.workdir);
         cmd.env_clear();
         populate_sanitized_env(&mut cmd, &req);
@@ -431,8 +442,19 @@ impl PtyPool {
 fn populate_sanitized_env(cmd: &mut CommandBuilder, req: &PtySpawnRequest) {
     // Teruskan variabel lingkungan non-rahasia standar termasuk sesi desktop/XDG agar
     // alur login OAuth browser dan keyring sistem (gh, agy, claude, codex, dll.) berjalan mulus.
+    if let Some(path_val) = std::env::var_os("PATH") {
+        let local_bin = RuntimePaths::expand_tilde("~/.local/bin");
+        let mut dirs: Vec<PathBuf> = std::env::split_paths(&path_val).collect();
+        if local_bin.is_dir() && !dirs.iter().any(|d| d == &local_bin) {
+            dirs.push(local_bin);
+        }
+        if let Ok(joined) = std::env::join_paths(dirs) {
+            cmd.env("PATH", joined);
+        } else {
+            cmd.env("PATH", path_val);
+        }
+    }
     for key in [
-        "PATH",
         "HOME",
         "LANG",
         "LC_ALL",
@@ -835,5 +857,50 @@ mod tests {
         assert!(fast_frames >= 1);
         // slow_sub tidak pernah di-drain selama banjir sehingga tidak memblokir PTY
         drop(slow_sub.rx);
+    }
+
+    #[tokio::test]
+    async fn passes_task_arg_when_task_is_non_empty_and_omits_when_blank() {
+        let dir = TempDir::new().unwrap();
+        let pool = PtyPool::new();
+        let (exit_tx, mut exit_rx) = mpsc::channel(4);
+
+        let mut prof = test_profile("sh", &["-c", "printf 'ARG0=%s ARG1=%s\\n' \"$0\" \"$1\""]);
+        prof.task_arg = Some("--prompt-interactive".to_string());
+
+        let handle = pool
+            .spawn(
+                PtySpawnRequest {
+                    session_id: "s-task-arg".to_string(),
+                    workdir: dir.path().to_path_buf(),
+                    isolated_tmp: dir.path().join("tmp"),
+                    log_path: dir.path().join("pty-task-arg.log"),
+                    profile: prof,
+                    extra_env: Vec::new(),
+                    task: "fix tests".to_string(),
+                    sandbox_policy: base_policy(dir.path()),
+                    ring_buffer_bytes: 16 * 1024,
+                    log_max_bytes: 1024 * 1024,
+                    batch_ms: 10,
+                    scrollback_lines: 100,
+                    size: (80, 24),
+                },
+                &TestNoopSandbox,
+                exit_tx,
+            )
+            .await
+            .unwrap();
+
+        let _ = tokio::time::timeout(Duration::from_secs(5), exit_rx.recv())
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        let snap = handle.snapshot();
+        assert!(
+            snap.text
+                .contains("ARG0=--prompt-interactive ARG1=fix tests"),
+            "expected task_arg forwarding, got: {}",
+            snap.text
+        );
     }
 }

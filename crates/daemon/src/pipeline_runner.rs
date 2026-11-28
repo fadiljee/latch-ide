@@ -61,6 +61,7 @@ impl StepRunner for DaemonStepRunner {
                         profile,
                         task: prompt,
                         base_ref,
+                        extra_args: Vec::new(),
                     },
                     Some(pipeline_run_id),
                     Some(step_id),

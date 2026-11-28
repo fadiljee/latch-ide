@@ -8,7 +8,7 @@ All coding agents default to **native OAuth (`proxy_mode = "bypass"`)** for zero
 
 | Profile ID | Agent CLI | Binary | Default Auth | OAuth Login Command | Proxy Provider (API Key mode) | Env Var (`api_key_env`) | Sandbox `extra_rw` | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `antigravity` | Antigravity | `agy` | OAuth | `agy` | `google` | `GEMINI_API_KEY` | `~/.gemini`, `~/.config/antigravity` | Supported |
+| `antigravity` | Antigravity | `agy` (`--prompt-interactive`, `--continue`, `--mode`, `--effort`, `--model`) | OAuth | `agy` | `google` | `GEMINI_API_KEY` | `~/.gemini`, `~/.config/antigravity` | Supported (First-class) |
 | `claude` | Claude Code | `claude` | OAuth | `claude login` | `anthropic` | `ANTHROPIC_API_KEY` | `~/.claude` | Supported |
 | `codex` | OpenAI Codex | `codex` | OAuth | `codex login` | `openai` | `OPENAI_API_KEY` | `~/.codex` | Supported |
 | `gemini` | Gemini CLI | `gemini` | OAuth | `gemini` | `google` | `GEMINI_API_KEY` | `~/.gemini` | Supported |

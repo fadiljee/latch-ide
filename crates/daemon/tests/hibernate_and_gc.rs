@@ -79,6 +79,7 @@ async fn hibernates_resumes_session_and_runs_retention_gc() {
             profile: "sleeper".to_string(),
             task: "idle hibernate test".to_string(),
             base_ref: None,
+            extra_args: Vec::new(),
         })
         .await
         .unwrap();

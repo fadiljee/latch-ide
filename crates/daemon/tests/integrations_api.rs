@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use axum::http::StatusCode;
 use latch_core::config::{
-    AgentAuthMode, AgentProfile, AgentProfileStatus, AgentsConfig, ApiKeySource, LatchConfig,
-    RuntimePaths,
+    AgentAuthMode, AgentProfile, AgentProfileStatus, AgentsConfig, AntigravityCliInfo,
+    ApiKeySource, LatchConfig, RuntimePaths,
 };
 use latch_core::integrations::{
     GitHubStatus, McpServerConfig, McpTransport, PluginConfig, PluginKind,
@@ -79,14 +79,35 @@ async fn agents_mcp_plugins_and_github_endpoints_enforce_validation_and_secret_h
         .await
         .unwrap();
     let agents: Vec<AgentProfileStatus> = parse_json(resp).await;
-    assert!(agents.iter().any(|a| a.id == "antigravity" && a.builtin));
+    let agy = agents
+        .iter()
+        .find(|a| a.id == "antigravity" && a.builtin)
+        .expect("antigravity builtin agent");
+    assert_eq!(agy.profile.command, "agy");
+    assert_eq!(
+        agy.profile.task_arg.as_deref(),
+        Some("--prompt-interactive")
+    );
+    assert_eq!(agy.profile.resume_args, vec!["--continue".to_string()]);
     assert!(agents.iter().any(|a| a.id == "claude" && a.builtin));
+
+    // 1b. GET /api/v1/agents/antigravity/info mengembalikan metadata Antigravity CLI (modes, efforts, status)
+    let resp = client
+        .get(format!("{base}/api/v1/agents/antigravity/info"))
+        .header("authorization", &auth)
+        .send()
+        .await
+        .unwrap();
+    let agy_info: AntigravityCliInfo = parse_json(resp).await;
+    assert!(agy_info.modes.iter().any(|m| m == "plan"));
+    assert!(agy_info.efforts.iter().any(|e| e == "high"));
 
     // 2. PUT /api/v1/agents/{id} menambah profil custom dan sinkron proxy_mode otomatis
     let custom_profile = AgentProfile {
         display_name: Some("Custom Agent".to_string()),
         command: "sh".to_string(),
         args: vec!["-c".to_string(), "echo hi".to_string()],
+        task_arg: None,
         env: BTreeMap::new(),
         pass_env: Vec::new(),
         auth_mode: AgentAuthMode::ApiKey,

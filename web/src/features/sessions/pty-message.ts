@@ -40,7 +40,17 @@ const PROFILE_SPECIFIC_TEMPLATES: Record<string, readonly PromptTemplate[]> = {
     ...DEFAULT_AGENT_TEMPLATES,
   ],
   antigravity: [
-    { id: "verify", label: "Verify & lint", text: "Run lint, typecheck, and tests; fix every warning before reporting done." },
+    { id: "agy-plan", label: "/plan", text: "/plan" },
+    { id: "agy-compact", label: "/compact", text: "/compact" },
+    { id: "agy-goal", label: "/goal", text: "/goal" },
+    { id: "agy-grill", label: "/grill-me", text: "/grill-me" },
+    { id: "agy-boost", label: "/boost", text: "/boost" },
+    { id: "agy-help", label: "/help", text: "/help" },
+    {
+      id: "verify",
+      label: "Verify & lint",
+      text: "Run lint, typecheck, and tests; fix every warning before reporting done.",
+    },
     ...DEFAULT_AGENT_TEMPLATES,
   ],
   aider: [

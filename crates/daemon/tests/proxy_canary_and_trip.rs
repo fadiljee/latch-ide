@@ -151,6 +151,7 @@ async fn secret_canary_never_leaks_to_sqlite_or_logs_and_breaker_trips_session()
             profile: "bypass-agent".to_string(),
             task: "verify bypass".to_string(),
             base_ref: None,
+            extra_args: Vec::new(),
         })
         .await
         .unwrap();
@@ -170,6 +171,7 @@ async fn secret_canary_never_leaks_to_sqlite_or_logs_and_breaker_trips_session()
             profile: "injected-agent".to_string(),
             task: format!("test Bearer sk-{canary}"),
             base_ref: None,
+            extra_args: Vec::new(),
         })
         .await
         .unwrap();
@@ -337,6 +339,7 @@ async fn budget_circuit_breaker_trips_session_under_one_second() {
             profile: "budget-agent".to_string(),
             task: "verify budget trip".to_string(),
             base_ref: None,
+            extra_args: Vec::new(),
         })
         .await
         .unwrap();

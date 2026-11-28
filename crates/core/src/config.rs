@@ -356,6 +356,72 @@ pub enum ApiKeySource {
     None,
 }
 
+/// Satu opsi model yang dilaporkan oleh `agy models`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AntigravityModelOption {
+    /// ID model untuk diteruskan ke `agy --model <id>`.
+    pub id: String,
+    /// Label tampilan ramah pengguna.
+    pub label: String,
+}
+
+/// Informasi runtime Antigravity CLI (`agy`) untuk panel & peluncur IDE.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AntigravityCliInfo {
+    /// Apakah biner `agy` terdeteksi pada host.
+    pub installed: bool,
+    /// Jalur eksekusi `agy` yang ditemukan.
+    pub command_path: Option<String>,
+    /// Versi Antigravity CLI (`agy --version`).
+    pub version: Option<String>,
+    /// Menandakan dukungan subcommand `agy acp`.
+    pub acp_supported: bool,
+    /// Mode eksekusi yang didukung (`--mode`).
+    pub modes: Vec<String>,
+    /// Tingkat penalaran yang didukung (`--effort`).
+    pub efforts: Vec<String>,
+    /// Daftar model tersedia dari `agy models`.
+    pub models: Vec<AntigravityModelOption>,
+}
+
+/// Mem-parse keluaran baris `agy models` (`<id>\t<label>`).
+pub fn parse_agy_models_output(raw: &str) -> Vec<AntigravityModelOption> {
+    let mut out = Vec::new();
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty()
+            || trimmed.starts_with("Fetching")
+            || trimmed.starts_with("Warning")
+            || trimmed.starts_with("Error")
+        {
+            continue;
+        }
+        let (id, label) = if let Some((left, right)) = trimmed.split_once('\t') {
+            (left.trim(), right.trim())
+        } else if let Some((left, right)) = trimmed.split_once("  ") {
+            (left.trim(), right.trim())
+        } else {
+            continue;
+        };
+        if !id.is_empty()
+            && !id.contains(' ')
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'/'))
+        {
+            out.push(AntigravityModelOption {
+                id: id.to_string(),
+                label: if label.is_empty() {
+                    id.to_string()
+                } else {
+                    label.to_string()
+                },
+            });
+        }
+    }
+    out
+}
+
 /// Ringkasan profil agen berikut status deteksi biner dan autentikasi untuk API/UI.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentProfileStatus {
@@ -422,10 +488,13 @@ impl AgentsConfig {
             display: &'a str,
             cmd: &'a str,
             args: &'a [&'a str],
+            task_arg: Option<&'a str>,
+            resume_args: &'a [&'a str],
             provider: Option<&'a str>,
             api_key_env: Option<&'a str>,
             login_cmd: &'a [&'a str],
             extra_rw: &'a [&'a str],
+            extra_ro: &'a [&'a str],
             desc: &'a str,
         }
 
@@ -435,10 +504,13 @@ impl AgentsConfig {
                 display: "Antigravity (agy)",
                 cmd: "agy",
                 args: &[],
+                task_arg: Some("--prompt-interactive"),
+                resume_args: &["--continue"],
                 provider: Some("google"),
                 api_key_env: Some("GEMINI_API_KEY"),
                 login_cmd: &["agy"],
                 extra_rw: &["~/.gemini", "~/.config/antigravity"],
+                extra_ro: &["~/.local/bin"],
                 desc: "Google Antigravity coding agent CLI (OAuth default, API key optional)",
             },
             BuiltinSpec {
@@ -446,10 +518,13 @@ impl AgentsConfig {
                 display: "Claude Code",
                 cmd: "claude",
                 args: &[],
+                task_arg: None,
+                resume_args: &["--continue"],
                 provider: Some("anthropic"),
                 api_key_env: Some("ANTHROPIC_API_KEY"),
                 login_cmd: &["claude", "login"],
                 extra_rw: &["~/.claude"],
+                extra_ro: &[],
                 desc: "Anthropic Claude Code CLI (OAuth default, ANTHROPIC_API_KEY optional)",
             },
             BuiltinSpec {
@@ -457,10 +532,13 @@ impl AgentsConfig {
                 display: "OpenAI Codex",
                 cmd: "codex",
                 args: &[],
+                task_arg: None,
+                resume_args: &[],
                 provider: Some("openai"),
                 api_key_env: Some("OPENAI_API_KEY"),
                 login_cmd: &["codex", "login"],
                 extra_rw: &["~/.codex"],
+                extra_ro: &[],
                 desc: "OpenAI Codex CLI (ChatGPT OAuth default, OPENAI_API_KEY optional)",
             },
             BuiltinSpec {
@@ -468,10 +546,13 @@ impl AgentsConfig {
                 display: "Gemini CLI",
                 cmd: "gemini",
                 args: &[],
+                task_arg: None,
+                resume_args: &[],
                 provider: Some("google"),
                 api_key_env: Some("GEMINI_API_KEY"),
                 login_cmd: &["gemini"],
                 extra_rw: &["~/.gemini"],
+                extra_ro: &[],
                 desc: "Google Gemini CLI (Google OAuth default, GEMINI_API_KEY optional)",
             },
             BuiltinSpec {
@@ -479,10 +560,13 @@ impl AgentsConfig {
                 display: "OpenCode",
                 cmd: "opencode",
                 args: &[],
+                task_arg: None,
+                resume_args: &[],
                 provider: Some("openai"),
                 api_key_env: Some("OPENAI_API_KEY"),
                 login_cmd: &["opencode", "auth", "login"],
                 extra_rw: &["~/.config/opencode", "~/.local/share/opencode"],
+                extra_ro: &[],
                 desc: "OpenCode multi-provider coding CLI (OAuth or API key)",
             },
             BuiltinSpec {
@@ -490,10 +574,13 @@ impl AgentsConfig {
                 display: "Aider",
                 cmd: "aider",
                 args: &[],
+                task_arg: None,
+                resume_args: &[],
                 provider: Some("openai"),
                 api_key_env: Some("OPENAI_API_KEY"),
                 login_cmd: &["aider"],
                 extra_rw: &[],
+                extra_ro: &[],
                 desc: "Aider AI pair programmer in terminal",
             },
             BuiltinSpec {
@@ -501,10 +588,13 @@ impl AgentsConfig {
                 display: "Goose",
                 cmd: "goose",
                 args: &[],
+                task_arg: None,
+                resume_args: &[],
                 provider: Some("openai"),
                 api_key_env: Some("OPENAI_API_KEY"),
                 login_cmd: &["goose", "configure"],
                 extra_rw: &["~/.config/goose"],
+                extra_ro: &[],
                 desc: "Block Goose extensible developer agent with native MCP",
             },
             BuiltinSpec {
@@ -512,10 +602,13 @@ impl AgentsConfig {
                 display: "Amp",
                 cmd: "amp",
                 args: &[],
+                task_arg: None,
+                resume_args: &[],
                 provider: Some("anthropic"),
                 api_key_env: Some("AMP_API_KEY"),
                 login_cmd: &["amp", "login"],
                 extra_rw: &["~/.config/amp"],
+                extra_ro: &[],
                 desc: "Sourcegraph Amp coding agent CLI",
             },
             BuiltinSpec {
@@ -523,10 +616,13 @@ impl AgentsConfig {
                 display: "Cline CLI",
                 cmd: "cline",
                 args: &[],
+                task_arg: None,
+                resume_args: &[],
                 provider: Some("anthropic"),
                 api_key_env: Some("ANTHROPIC_API_KEY"),
                 login_cmd: &["cline", "auth"],
                 extra_rw: &["~/.cline"],
+                extra_ro: &[],
                 desc: "Cline autonomous coding agent CLI",
             },
             BuiltinSpec {
@@ -534,10 +630,13 @@ impl AgentsConfig {
                 display: "Cursor Agent",
                 cmd: "cursor-agent",
                 args: &[],
+                task_arg: None,
+                resume_args: &[],
                 provider: Some("openai"),
                 api_key_env: Some("CURSOR_API_KEY"),
                 login_cmd: &["cursor-agent", "login"],
                 extra_rw: &["~/.cursor"],
+                extra_ro: &[],
                 desc: "Cursor headless CLI agent",
             },
             BuiltinSpec {
@@ -545,10 +644,13 @@ impl AgentsConfig {
                 display: "GitHub Copilot CLI",
                 cmd: "gh",
                 args: &["copilot"],
+                task_arg: None,
+                resume_args: &[],
                 provider: None,
                 api_key_env: Some("GITHUB_TOKEN"),
                 login_cmd: &["gh", "auth", "login", "--web"],
                 extra_rw: &["~/.config/gh"],
+                extra_ro: &[],
                 desc: "GitHub Copilot CLI via GitHub OAuth",
             },
             BuiltinSpec {
@@ -556,10 +658,13 @@ impl AgentsConfig {
                 display: "Kimi CLI",
                 cmd: "kimi",
                 args: &[],
+                task_arg: None,
+                resume_args: &[],
                 provider: Some("openai"),
                 api_key_env: Some("MOONSHOT_API_KEY"),
                 login_cmd: &["kimi", "login"],
                 extra_rw: &["~/.kimi"],
+                extra_ro: &[],
                 desc: "Moonshot Kimi coding agent CLI",
             },
             BuiltinSpec {
@@ -567,10 +672,13 @@ impl AgentsConfig {
                 display: "Qwen Code",
                 cmd: "qwen",
                 args: &[],
+                task_arg: None,
+                resume_args: &[],
                 provider: Some("openai"),
                 api_key_env: Some("DASHSCOPE_API_KEY"),
                 login_cmd: &["qwen"],
                 extra_rw: &["~/.qwen"],
+                extra_ro: &[],
                 desc: "Qwen Code terminal coding agent",
             },
         ];
@@ -582,6 +690,7 @@ impl AgentsConfig {
                     display_name: Some(spec.display.to_string()),
                     command: spec.cmd.to_string(),
                     args: spec.args.iter().map(|s| (*s).to_string()).collect(),
+                    task_arg: spec.task_arg.map(str::to_string),
                     env: BTreeMap::new(),
                     pass_env: Vec::new(),
                     auth_mode: AgentAuthMode::OAuth,
@@ -589,9 +698,9 @@ impl AgentsConfig {
                     login_command: spec.login_cmd.iter().map(|s| (*s).to_string()).collect(),
                     proxy_mode: ProxyMode::Bypass,
                     proxy_provider: spec.provider.map(str::to_string),
-                    resume_args: Vec::new(),
+                    resume_args: spec.resume_args.iter().map(|s| (*s).to_string()).collect(),
                     extra_rw: spec.extra_rw.iter().map(|s| (*s).to_string()).collect(),
-                    extra_ro: Vec::new(),
+                    extra_ro: spec.extra_ro.iter().map(|s| (*s).to_string()).collect(),
                     category: "coding_agent".to_string(),
                     description: Some(spec.desc.to_string()),
                 },
@@ -617,6 +726,9 @@ pub struct AgentProfile {
     /// Argumen dasar perintah.
     #[serde(default)]
     pub args: Vec<String>,
+    /// Flag CLI opsional untuk meneruskan prompt tugas awal saat sesi dibuka (mis. `--prompt-interactive` untuk `agy`).
+    #[serde(default)]
+    pub task_arg: Option<String>,
     /// Variabel lingkungan statis tambahan (jangan isi API key di sini).
     #[serde(default)]
     pub env: BTreeMap<String, String>,
@@ -661,6 +773,7 @@ impl Default for AgentProfile {
             display_name: None,
             command: String::new(),
             args: Vec::new(),
+            task_arg: None,
             env: BTreeMap::new(),
             pass_env: Vec::new(),
             auth_mode: AgentAuthMode::OAuth,
@@ -677,7 +790,7 @@ impl Default for AgentProfile {
     }
 }
 
-/// Mencari jalur eksekusi perintah pada `PATH` sistem (tanpa menjalankan subprocess).
+/// Mencari jalur eksekusi perintah pada `PATH` sistem dan direktori biner pengguna umum (`~/.local/bin`).
 pub fn resolve_command_in_path(command: &str) -> Option<PathBuf> {
     let trimmed = command.trim();
     if trimmed.is_empty() {
@@ -687,9 +800,21 @@ pub fn resolve_command_in_path(command: &str) -> Option<PathBuf> {
     if candidate.is_absolute() || trimmed.contains(std::path::MAIN_SEPARATOR) {
         return is_executable_file(&candidate).then_some(candidate);
     }
-    let path_var = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path_var) {
-        let full = dir.join(trimmed);
+    if let Some(path_var) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            let full = dir.join(trimmed);
+            if is_executable_file(&full) {
+                return Some(full);
+            }
+        }
+    }
+    // Cadangan untuk peluncur GUI/Tauri yang kerap menjalankan daemon tanpa `~/.local/bin` di PATH.
+    for fallback_dir in [
+        RuntimePaths::expand_tilde("~/.local/bin"),
+        PathBuf::from("/usr/local/bin"),
+        PathBuf::from("/opt/homebrew/bin"),
+    ] {
+        let full = fallback_dir.join(trimmed);
         if is_executable_file(&full) {
             return Some(full);
         }
@@ -1067,6 +1192,22 @@ pass_env = ["ANTHROPIC_API_KEY"]
     fn validates_all_builtin_agent_profiles_invariants() {
         let builtins = super::AgentsConfig::with_builtin_defaults();
         assert!(builtins.profiles.len() >= 15);
+        let agy = builtins
+            .profiles
+            .get("antigravity")
+            .expect("antigravity builtin must exist");
+        assert_eq!(agy.command, "agy");
+        assert_eq!(agy.task_arg.as_deref(), Some("--prompt-interactive"));
+        assert_eq!(agy.resume_args, vec!["--continue".to_string()]);
+        assert!(agy.extra_ro.iter().any(|p| p == "~/.local/bin"));
+
+        let parsed_models = super::parse_agy_models_output(
+            "Fetching available models...\ngemini-4-neon-high\tGemini 4 Neon (High)\nclaude-opus-5-5-high\tClaude Opus 5.5 (High)\n",
+        );
+        assert_eq!(parsed_models.len(), 2);
+        assert_eq!(parsed_models[0].id, "gemini-4-neon-high");
+        assert_eq!(parsed_models[0].label, "Gemini 4 Neon (High)");
+        assert_eq!(parsed_models[1].id, "claude-opus-5-5-high");
         for (id, profile) in &builtins.profiles {
             assert!(!profile.command.trim().is_empty(), "empty command for {id}");
             assert!(

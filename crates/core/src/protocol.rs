@@ -186,16 +186,21 @@ pub struct ProjectAddParams {
 }
 
 /// Parameter `session.run`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SessionRunParams {
     /// Nama atau ID proyek.
     pub project: String,
     /// Nama profil di `agents.toml`.
     pub profile: String,
-    /// Deskripsi tugas.
+    /// Deskripsi tugas (boleh kosong untuk mode terminal interaktif/REPL).
+    #[serde(default)]
     pub task: String,
     /// Ref branch dasar opsional.
+    #[serde(default)]
     pub base_ref: Option<String>,
+    /// Argumen CLI tambahan khusus sesi (mis. `--mode`, `plan`, `--effort`, `high`, `--model`, `...`).
+    #[serde(default)]
+    pub extra_args: Vec<String>,
 }
 
 /// Parameter `session.list`.

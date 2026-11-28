@@ -53,6 +53,7 @@ export interface Catalog {
     emptyTitle: string;
     emptyBody: string;
     newSessionCta: string;
+    openAntigravityCli: string;
     loadingDiff: string;
     loadingTelemetry: string;
     resync: string;
@@ -80,6 +81,13 @@ export interface Catalog {
     profileLabel: string;
     taskLabel: string;
     taskPlaceholder: string;
+    taskOptionalHint: string;
+    agyOptionsHeading: string;
+    agyModeLabel: string;
+    agyEffortLabel: string;
+    agyModelLabel: string;
+    agyDefaultOption: string;
+    agyContinueLabel: string;
     baseRefLabel: string;
     baseRefPlaceholder: string;
     launch: string;
@@ -222,6 +230,7 @@ export interface Catalog {
     toggleSidePanel: string;
     toggleSplit: string;
     openGrid: string;
+    openAntigravityCli: string;
     openNewSession: string;
     openAgents: string;
     openPlugins: string;
@@ -289,6 +298,7 @@ export const CATALOGS: Record<Locale, Catalog> = {
       emptyTitle: "Pilih sesi di sidebar atau buat sesi baru",
       emptyBody: "Setiap sesi berjalan di git worktree terisolasi dengan proxy telemetri dan sandbox.",
       newSessionCta: "+ Sesi Baru",
+      openAntigravityCli: "Antigravity CLI",
       loadingDiff: "Memuat diff worktree...",
       loadingTelemetry: "Memuat telemetri proxy...",
       resync: "Sinkronkan Layar",
@@ -314,8 +324,15 @@ export const CATALOGS: Record<Locale, Catalog> = {
       title: "Buat Sesi Agen Baru",
       projectLabel: "Proyek",
       profileLabel: "Profil Agen",
-      taskLabel: "Deskripsi Tugas",
+      taskLabel: "Deskripsi Tugas (opsional)",
       taskPlaceholder: "Tambahkan filter tag beserta unit test...",
+      taskOptionalHint: "Biarkan kosong untuk membuka terminal CLI interaktif.",
+      agyOptionsHeading: "Opsi Antigravity CLI (agy)",
+      agyModeLabel: "Mode Eksekusi (--mode)",
+      agyEffortLabel: "Penalaran (--effort)",
+      agyModelLabel: "Model (--model)",
+      agyDefaultOption: "Bawaan CLI",
+      agyContinueLabel: "Lanjutkan percakapan terakhir (--continue)",
       baseRefLabel: "Branch Dasar (opsional)",
       baseRefPlaceholder: "Kosongkan untuk branch bawaan proyek",
       launch: "Jalankan Sesi",
@@ -460,6 +477,7 @@ export const CATALOGS: Record<Locale, Catalog> = {
       toggleSidePanel: "Buka/Tutup Panel Kanan",
       toggleSplit: "Ganti Tata Letak Pane (Satu / Split / Grid 2×2)",
       openGrid: "Buka Grid Terminal 2×2",
+      openAntigravityCli: "Luncurkan Antigravity CLI (agy)",
       openNewSession: "Buat Sesi Agen Baru",
       openAgents: "Kelola Agen (OAuth & API Key)",
       openPlugins: "Buka Integrasi (GitHub, MCP, Plugin)",
@@ -525,6 +543,7 @@ export const CATALOGS: Record<Locale, Catalog> = {
       emptyTitle: "Select a session or launch a new one",
       emptyBody: "Each session runs in an isolated git worktree with proxy telemetry and sandboxing.",
       newSessionCta: "+ New Session",
+      openAntigravityCli: "Antigravity CLI",
       loadingDiff: "Loading worktree diff...",
       loadingTelemetry: "Loading proxy telemetry...",
       resync: "Resync Screen",
@@ -550,8 +569,15 @@ export const CATALOGS: Record<Locale, Catalog> = {
       title: "Launch Agent Session",
       projectLabel: "Project",
       profileLabel: "Agent Profile",
-      taskLabel: "Task Description",
+      taskLabel: "Task Description (optional)",
       taskPlaceholder: "Add a tag filter with unit tests...",
+      taskOptionalHint: "Leave blank to launch an interactive CLI terminal.",
+      agyOptionsHeading: "Antigravity CLI (agy) Options",
+      agyModeLabel: "Execution Mode (--mode)",
+      agyEffortLabel: "Reasoning Effort (--effort)",
+      agyModelLabel: "Model (--model)",
+      agyDefaultOption: "CLI Default",
+      agyContinueLabel: "Continue last conversation (--continue)",
       baseRefLabel: "Base Ref (optional)",
       baseRefPlaceholder: "Leave empty for project default branch",
       launch: "Launch Session",
@@ -696,6 +722,7 @@ export const CATALOGS: Record<Locale, Catalog> = {
       toggleSidePanel: "Toggle Side Panel",
       toggleSplit: "Cycle Pane Layout (Single / Split / 2×2 Grid)",
       openGrid: "Open 2×2 Terminal Grid",
+      openAntigravityCli: "Launch Antigravity CLI (agy)",
       openNewSession: "New Agent Session",
       openAgents: "Manage Agents (OAuth & API Key)",
       openPlugins: "Open Integrations (GitHub, MCP, Plugins)",

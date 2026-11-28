@@ -8,6 +8,7 @@ import { BotsPage } from "../features/bots/BotsPage";
 import { HostsPage } from "../features/hosts/HostsPage";
 import { PluginsPage } from "../features/plugins/PluginsPage";
 import { ChatView } from "../features/sessions/ChatView";
+import { launchAntigravityCliQuick } from "../features/sessions/quick-launch";
 import { SettingsPage } from "../features/settings/SettingsPage";
 import { UsagePage } from "../features/usage/UsagePage";
 import { CATALOGS } from "../lib/i18n/catalog";
@@ -309,13 +310,14 @@ export function Workspace() {
         <div className="flex flex-1 flex-col items-center justify-center rounded-lg border border-line bg-surface p-8 text-center">
           <h2 className="text-sm font-semibold text-fg">{t.workspace.emptyTitle}</h2>
           <p className="mt-1 max-w-md text-xs text-fg-3">{t.workspace.emptyBody}</p>
-          <Button
-            variant="primary"
-            className="mt-4"
-            onClick={() => setNewSessionOpen(true)}
-          >
-            {t.workspace.newSessionCta}
-          </Button>
+          <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+            <Button variant="primary" onClick={() => void launchAntigravityCliQuick()}>
+              {t.workspace.openAntigravityCli}
+            </Button>
+            <Button variant="secondary" onClick={() => setNewSessionOpen(true)}>
+              {t.workspace.newSessionCta}
+            </Button>
+          </div>
         </div>
       ) : splitMode === "grid" ? (
         <Suspense fallback={<p className="p-4 text-xs text-fg-3">{t.workspace.loadingDiff}</p>}>

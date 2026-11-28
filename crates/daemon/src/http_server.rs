@@ -225,6 +225,10 @@ pub async fn start_http_server(
         )
         .route("/api/v1/agents", get(handle_list_agents))
         .route(
+            "/api/v1/agents/antigravity/info",
+            get(handle_antigravity_cli_info),
+        )
+        .route(
             "/api/v1/agents/{id}",
             put(handle_upsert_agent).delete(handle_delete_agent),
         )
@@ -1022,6 +1026,17 @@ async fn handle_list_agents(
         return resp;
     }
     Json(state.manager.list_agents().await).into_response()
+}
+
+async fn handle_antigravity_cli_info(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Read).await {
+        return resp;
+    }
+    Json(state.manager.antigravity_cli_info().await).into_response()
 }
 
 async fn handle_upsert_agent(

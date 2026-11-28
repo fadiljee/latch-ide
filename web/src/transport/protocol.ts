@@ -188,6 +188,7 @@ export interface AgentProfile {
   display_name?: string | null;
   command: string;
   args: string[];
+  task_arg?: string | null;
   env: Record<string, string>;
   pass_env: string[];
   auth_mode: AgentAuthMode;
@@ -200,6 +201,21 @@ export interface AgentProfile {
   extra_ro: string[];
   category: string;
   description?: string | null;
+}
+
+export interface AntigravityModelOption {
+  id: string;
+  label: string;
+}
+
+export interface AntigravityCliInfo {
+  installed: boolean;
+  command_path: string | null;
+  version: string | null;
+  acp_supported: boolean;
+  modes: string[];
+  efforts: string[];
+  models: AntigravityModelOption[];
 }
 
 export interface AgentProfileStatus {

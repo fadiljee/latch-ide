@@ -1,6 +1,7 @@
 import type {
   AgentProfile,
   AgentProfileStatus,
+  AntigravityCliInfo,
   ApprovalRequest,
   DaemonEventFrame,
   DaemonHealth,
@@ -109,7 +110,13 @@ export async function fetchSessions(token: string): Promise<Session[]> {
 
 export async function createSession(
   token: string,
-  params: { project: string; profile: string; task: string; base_ref?: string },
+  params: {
+    project: string;
+    profile: string;
+    task?: string;
+    base_ref?: string;
+    extra_args?: string[];
+  },
 ): Promise<Session> {
   return fetchJson<Session>(`${apiBase()}/api/v1/sessions`, {
     method: "POST",
@@ -117,8 +124,9 @@ export async function createSession(
     body: JSON.stringify({
       project: params.project,
       profile: params.profile,
-      task: params.task,
+      task: params.task ?? "",
       base_ref: params.base_ref ?? null,
+      extra_args: params.extra_args ?? [],
     }),
   });
 }
@@ -280,6 +288,12 @@ export async function triggerGc(token: string, dryRun: boolean): Promise<GcRepor
 
 export async function fetchAgents(token: string): Promise<AgentProfileStatus[]> {
   return fetchJson<AgentProfileStatus[]>(`${apiBase()}/api/v1/agents`, {
+    headers: authHeaders(token),
+  });
+}
+
+export async function fetchAntigravityCliInfo(token: string): Promise<AntigravityCliInfo> {
+  return fetchJson<AntigravityCliInfo>(`${apiBase()}/api/v1/agents/antigravity/info`, {
     headers: authHeaders(token),
   });
 }

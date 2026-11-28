@@ -94,6 +94,7 @@ async fn approval_gate_approves_under_500ms_denies_on_timeout_and_blocks_disallo
             profile: "sleeper".to_string(),
             task: "approval test".to_string(),
             base_ref: None,
+            extra_args: Vec::new(),
         })
         .await
         .unwrap();
