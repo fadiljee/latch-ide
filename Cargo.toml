@@ -58,7 +58,7 @@ nix = { version = "0.29", default-features = false, features = ["signal", "proce
 clap = { version = "4", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
 ratatui = { version = "0.29", default-features = false, features = ["crossterm"] }
 crossterm = { version = "0.28", default-features = false, features = ["events", "bracketed-paste"] }
-base64 = "0.22"
+base64 = "0.23"
 bytes = "1"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json", "ws", "query"] }
