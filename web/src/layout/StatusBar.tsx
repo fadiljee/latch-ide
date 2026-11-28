@@ -47,6 +47,7 @@ export function StatusBar() {
         >
           {(
             [
+              { id: "board", label: t.workspace.boardMode },
               { id: "single", label: t.workspace.singlePane },
               { id: "vertical", label: t.workspace.splitToggle },
               { id: "grid", label: t.workspace.gridMode },

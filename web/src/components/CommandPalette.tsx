@@ -76,6 +76,14 @@ export function CommandPalette() {
         run: () => toggleSplit(),
       },
       {
+        id: "open-board",
+        label: t.palette.openBoard,
+        run: () => {
+          setActiveRoute("workspace");
+          setSplitMode("board");
+        },
+      },
+      {
         id: "open-grid",
         label: t.palette.openGrid,
         run: () => {

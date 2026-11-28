@@ -46,6 +46,10 @@ export interface Catalog {
     splitToggle: string;
     singlePane: string;
     gridMode: string;
+    boardMode: string;
+    boardHeading: string;
+    boardSubtitle: string;
+    boardColumnEmpty: string;
     focusedCell: string;
     clickToFocus: string;
     expandPane: string;
@@ -229,6 +233,7 @@ export interface Catalog {
     toggleSidebar: string;
     toggleSidePanel: string;
     toggleSplit: string;
+    openBoard: string;
     openGrid: string;
     openAntigravityCli: string;
     openNewSession: string;
@@ -291,6 +296,10 @@ export const CATALOGS: Record<Locale, Catalog> = {
       splitToggle: "Split Pane",
       singlePane: "Satu Pane",
       gridMode: "Grid 2×2",
+      boardMode: "Papan",
+      boardHeading: "Papan Sesi Mission Control",
+      boardSubtitle: "Pantau seluruh sesi agen secara langsung berdasarkan status dan buka terminal/diff dengan 1 klik.",
+      boardColumnEmpty: "Tidak ada sesi",
       focusedCell: "Fokus",
       clickToFocus: "Klik fokus",
       expandPane: "Fokus Penuh",
@@ -475,7 +484,8 @@ export const CATALOGS: Record<Locale, Catalog> = {
       empty: "Tidak ada perintah yang cocok.",
       toggleSidebar: "Buka/Tutup Sidebar Sesi",
       toggleSidePanel: "Buka/Tutup Panel Kanan",
-      toggleSplit: "Ganti Tata Letak Pane (Satu / Split / Grid 2×2)",
+      toggleSplit: "Ganti Tata Letak Pane (Satu / Split / Grid 2×2 / Papan)",
+      openBoard: "Buka Papan Sesi (Mission Control)",
       openGrid: "Buka Grid Terminal 2×2",
       openAntigravityCli: "Luncurkan Antigravity CLI (agy)",
       openNewSession: "Buat Sesi Agen Baru",
@@ -536,6 +546,10 @@ export const CATALOGS: Record<Locale, Catalog> = {
       splitToggle: "Split Pane",
       singlePane: "Single Pane",
       gridMode: "2×2 Grid",
+      boardMode: "Board",
+      boardHeading: "Mission Control Session Board",
+      boardSubtitle: "Track every agent session live by status and jump straight into terminal or diff.",
+      boardColumnEmpty: "No sessions",
       focusedCell: "Focused",
       clickToFocus: "Click to focus",
       expandPane: "Focus Pane",
@@ -720,7 +734,8 @@ export const CATALOGS: Record<Locale, Catalog> = {
       empty: "No matching commands.",
       toggleSidebar: "Toggle Session Sidebar",
       toggleSidePanel: "Toggle Side Panel",
-      toggleSplit: "Cycle Pane Layout (Single / Split / 2×2 Grid)",
+      toggleSplit: "Cycle Pane Layout (Single / Split / 2×2 Grid / Board)",
+      openBoard: "Open Session Board (Mission Control)",
       openGrid: "Open 2×2 Terminal Grid",
       openAntigravityCli: "Launch Antigravity CLI (agy)",
       openNewSession: "New Agent Session",

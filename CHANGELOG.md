@@ -5,6 +5,8 @@ Format mengikuti [Keep a Changelog](https://keepachangelog.com/id-ID/1.1.0/) dan
 ## [Unreleased]
 
 ### Added
+- **Papan Sesi Mission Control (`IT-107`, `FR-I10`, `FR-I12`):**
+  - `web/`: menambahkan `SessionBoard` (lazy-loaded) dengan 5 kolom status live (`Menunggu Anda`, `Berjalan`, `Perlu Perhatian`, `Selesai`, `Hibernasi`), kartu ringkas berisikan profil agen/proyek/biaya, tombol aksi cepat (`Terminal`, `Diff`, `Jeda`, `Lanjut`), pengalih `Papan` di `StatusBar` & `CommandPalette`, serta unit test `SessionBoard.test.tsx`.
 - **Integrasi Antigravity CLI (`agy`) Kelas Satu di Latch IDE:**
   - `latch-core`, `latch-pty-pool`, `latch-daemon`, `latch-cli`: dukungan `task_arg = "--prompt-interactive"` untuk meneruskan prompt tugas awal otomatis ke `agy`, `resume_args = ["--continue"]`, resolusi jalur cadangan `~/.local/bin` agar `agy` terdeteksi di sesi GUI/Tauri, `extra_args` tervalidasi per sesi (`--mode`, `--effort`, `--model`, `--continue`), endpoint `GET /api/v1/agents/antigravity/info` (versi & daftar model live dari `agy models`), serta subcommand `latch agy [--mode ...] [--effort ...] [--model ...] [-c] [task]`.
   - `web/`: tombol peluncuran 1-klik **Antigravity CLI** di `TitleBar`, `Workspace`, dan `CommandPalette`, panel opsi **Antigravity CLI (`agy`)** di `NewSessionDialog` (pilihan mode, effort, model live, `--continue`, dan dukungan sesi REPL interaktif tanpa wajib mengisi tugas), serta templat slash command `agy` (`/plan`, `/compact`, `/goal`, `/grill-me`, `/boost`, `/help`) di `Composer`, lengkap dengan tes unit Rust & Vitest.

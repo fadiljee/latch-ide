@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
 export type SessionTab = "terminal" | "chat" | "diff";
-export type SplitMode = "single" | "vertical" | "grid";
+export type SplitMode = "single" | "vertical" | "grid" | "board";
 
 interface LayoutState {
   activeSessionId: string | null;
@@ -36,7 +36,13 @@ export const useLayoutStore = create<LayoutState>()(
       toggleSplit: () => {
         const cur = get().splitMode;
         const next: SplitMode =
-          cur === "single" ? "vertical" : cur === "vertical" ? "grid" : "single";
+          cur === "single"
+            ? "vertical"
+            : cur === "vertical"
+              ? "grid"
+              : cur === "grid"
+                ? "board"
+                : "single";
         set({ splitMode: next });
       },
       setPrimaryTab: (primaryTab) => set({ primaryTab }),

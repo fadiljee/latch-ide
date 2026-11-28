@@ -30,6 +30,9 @@ const TerminalView = lazy(() => import("../features/terminal/TerminalView"));
 const TerminalGrid = lazy(() =>
   import("../features/terminal/TerminalGrid").then((m) => ({ default: m.TerminalGrid })),
 );
+const SessionBoard = lazy(() =>
+  import("../features/sessions/SessionBoard").then((m) => ({ default: m.SessionBoard })),
+);
 const DiffView = lazy(() => import("../features/review/DiffView"));
 
 interface SessionPaneProps {
@@ -306,6 +309,22 @@ export function Workspace() {
             </div>
           </form>
         </div>
+      ) : splitMode === "board" ? (
+        <Suspense fallback={<p className="p-4 text-xs text-fg-3">{t.workspace.loadingDiff}</p>}>
+          <SessionBoard
+            token={token}
+            statusLabels={t.statusLabels}
+            actions={t.sessionActions}
+            workspaceLabels={t.workspace}
+            onOpenSession={(sid, targetTab) => {
+              setActiveSession(sid);
+              setFocusedGridSession(sid);
+              setPrimaryTab(targetTab);
+              setSplitMode("single");
+            }}
+            onNewSession={() => setNewSessionOpen(true)}
+          />
+        </Suspense>
       ) : !effectivePrimary ? (
         <div className="flex flex-1 flex-col items-center justify-center rounded-lg border border-line bg-surface p-8 text-center">
           <h2 className="text-sm font-semibold text-fg">{t.workspace.emptyTitle}</h2>
