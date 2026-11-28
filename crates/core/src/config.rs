@@ -160,6 +160,21 @@ impl RuntimePaths {
         self.state_dir.join("undo")
     }
 
+    /// Mengembalikan jalur berkas preferensi pengguna IDE (`~/.config/latch/prefs.json`).
+    pub fn prefs_file(&self) -> PathBuf {
+        self.config_dir.join("prefs.json")
+    }
+
+    /// Mengembalikan jalur berkas perintah kustom pengguna (`~/.config/latch/commands.toml`, hanya dari config pengguna).
+    pub fn commands_file(&self) -> PathBuf {
+        self.config_dir.join("commands.toml")
+    }
+
+    /// Mengembalikan jalur berkas registri LSP pengguna (`~/.config/latch/lsp.toml`, bukan dari repo tak tepercaya).
+    pub fn lsp_file(&self) -> PathBuf {
+        self.config_dir.join("lsp.toml")
+    }
+
     /// Mengembangkan awalan `~/` jika ada di string konfigurasi.
     pub fn expand_tilde(raw: &str) -> PathBuf {
         if let Some(rest) = raw.strip_prefix("~/") {
@@ -189,6 +204,106 @@ pub struct LatchConfig {
     pub notifications: NotificationsConfig,
     /// Kebijakan retensi data.
     pub retention: RetentionConfig,
+    /// Pengaturan keamanan & perilaku Agent IDE (`[ide]`).
+    pub ide: IdeConfig,
+}
+
+/// Bagian `[ide]` pada `config.toml` (`IDE_SECURITY.md` §3, `IT-207`, `IT-506`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct IdeConfig {
+    /// Izinkan pembukaan shell host tanpa sandbox (WAJIB nonaktif bawaan demi keamanan `IT7`).
+    pub allow_host_shell: bool,
+    /// Izinkan shell host lewat token remote (WAJIB nonaktif bawaan).
+    pub allow_host_shell_remote: bool,
+    /// Kebijakan edit saat agen aktif (`warn`, `pause_on_edit`, `allow`).
+    pub edit_policy: String,
+}
+
+impl Default for IdeConfig {
+    fn default() -> Self {
+        Self {
+            allow_host_shell: false,
+            allow_host_shell_remote: false,
+            edit_policy: "warn".to_string(),
+        }
+    }
+}
+
+/// Satu perintah kustom pengguna di `commands.toml` (`IT-508`, `IDE_SECURITY.md` IT10).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CustomCommandConfig {
+    /// ID unik perintah.
+    pub id: String,
+    /// Judul tampilan pada palet perintah.
+    pub title: String,
+    /// Jenis eksekusi (`prompt` ke agen atau `shell` di worktree tersandbox).
+    pub kind: String,
+    /// Isi prompt atau perintah shell.
+    pub payload: String,
+    /// Deskripsi singkat opsional.
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+/// Kumpulan perintah kustom pengguna (`~/.config/latch/commands.toml`).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CustomCommandsFile {
+    /// Daftar perintah kustom yang didaftarkan pengguna.
+    pub commands: Vec<CustomCommandConfig>,
+}
+
+/// Memuat daftar perintah kustom dari `commands.toml` pengguna (mengembalikan kosong bila belum ada).
+pub fn load_custom_commands(path: &Path) -> Vec<CustomCommandConfig> {
+    let Ok(raw) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    toml::from_str::<CustomCommandsFile>(&raw)
+        .map(|f| f.commands)
+        .unwrap_or_default()
+}
+
+/// Menyimpan daftar perintah kustom ke `commands.toml` pengguna secara atomik (`0600`).
+pub fn save_custom_commands_file(
+    path: &Path,
+    commands: &[CustomCommandConfig],
+) -> Result<(), ConfigError> {
+    let file = CustomCommandsFile {
+        commands: commands.to_vec(),
+    };
+    let serialized = toml::to_string_pretty(&file).map_err(|err| ConfigError::Validation {
+        path: path.display().to_string(),
+        line: 1,
+        field: "commands".to_string(),
+        message: err.to_string(),
+    })?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|source| ConfigError::Io {
+            path: parent.display().to_string(),
+            source,
+        })?;
+    }
+    let tmp = path.with_extension("tmp");
+    fs::write(&tmp, serialized).map_err(|source| ConfigError::Io {
+        path: tmp.display().to_string(),
+        source,
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600)).map_err(|source| {
+            ConfigError::Io {
+                path: tmp.display().to_string(),
+                source,
+            }
+        })?;
+    }
+    fs::rename(&tmp, path).map_err(|source| ConfigError::Io {
+        path: path.display().to_string(),
+        source,
+    })?;
+    Ok(())
 }
 
 /// Bagian `[daemon]` pada `config.toml`.

@@ -7,9 +7,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use latch_core::config::{
-    parse_agy_models_output, resolve_command_in_path, save_agents_config, AgentAuthMode,
-    AgentProfile, AgentProfileStatus, AgentsConfig, AntigravityCliInfo, ApiKeySource, LatchConfig,
-    RuntimePaths,
+    load_custom_commands, parse_agy_models_output, resolve_command_in_path, save_agents_config,
+    save_custom_commands_file, AgentAuthMode, AgentProfile, AgentProfileStatus, AgentsConfig,
+    AntigravityCliInfo, ApiKeySource, CustomCommandConfig, LatchConfig, RuntimePaths,
 };
 use latch_core::id::{new_id, now_ms, short_id};
 use latch_core::integrations::{
@@ -51,6 +51,11 @@ use latch_proxy::{
 use latch_pty_pool::session::{is_pid_alive, PtyExitEvent, PtyFrame, PtySubscriber};
 use latch_pty_pool::{PtyError, PtyPool, PtySpawnRequest};
 use latch_sandbox::build_session_policy;
+#[cfg(feature = "ide")]
+use latch_search::{
+    extract_outline, search_files, search_text, FileSearchHit, OutlineSymbol, SearchError,
+    TextSearchMatch, TextSearchRequest, TextSearchSummary,
+};
 use latch_store::{StoreError, StoreHandle};
 use thiserror::Error;
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex as AsyncMutex, Notify, RwLock};
@@ -86,6 +91,10 @@ pub enum ManagerError {
     #[cfg(feature = "ide")]
     #[error(transparent)]
     Fs(#[from] FsServiceError),
+    /// Galat subsistem pencarian (`latch-search`).
+    #[cfg(feature = "ide")]
+    #[error(transparent)]
+    Search(#[from] SearchError),
     /// Galat validasi konfigurasi/profil.
     #[error("configuration error: {0}")]
     Config(String),
@@ -130,6 +139,17 @@ pub enum DaemonEvent {
         paths: Vec<String>,
         by: String,
     },
+    /// Satu hasil pencarian teks streaming (`IT-301`).
+    SearchResult {
+        search_id: String,
+        path: String,
+        line: usize,
+        column: usize,
+        text: String,
+        done: bool,
+    },
+    /// Preferensi pengguna IDE diperbarui (`IT-212`).
+    PrefsChanged,
 }
 
 /// Koordinator state sesi daemon (`store` + `git-engine` + `pty-pool` + `sandbox` + `proxy`).
@@ -151,6 +171,8 @@ pub struct SessionManager {
     pipeline_tasks: Arc<AsyncMutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
     #[cfg(feature = "ide")]
     fs_watcher: Arc<AsyncMutex<SessionWatchTracker>>,
+    #[cfg(feature = "ide")]
+    active_searches: Arc<AsyncMutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>>,
     exit_tx: mpsc::Sender<PtyExitEvent>,
     trip_tx: mpsc::Sender<TripEvent>,
     events_tx: broadcast::Sender<DaemonEvent>,
@@ -225,6 +247,8 @@ impl SessionManager {
             pipeline_tasks: Arc::new(AsyncMutex::new(HashMap::new())),
             #[cfg(feature = "ide")]
             fs_watcher: Arc::new(AsyncMutex::new(SessionWatchTracker::default())),
+            #[cfg(feature = "ide")]
+            active_searches: Arc::new(AsyncMutex::new(HashMap::new())),
             exit_tx,
             trip_tx,
             events_tx,
@@ -2814,6 +2838,240 @@ impl SessionManager {
         });
         Ok(res)
     }
+
+    // =========================================================================
+    // Pencarian Berkas Fuzzy, Teks Streaming, Outline, Prefs, Workspaces & Commands
+    // (`IT-211`, `IT-212`, `IT-301`, `IT-309`, `IT-508`, `IT-509`)
+    // =========================================================================
+
+    /// Pencarian fuzzy nama berkas pada worktree sesi (`IT-211`).
+    #[cfg(feature = "ide")]
+    pub async fn search_session_files(
+        &self,
+        session_id: &str,
+        query: String,
+        limit: usize,
+    ) -> Result<Vec<FileSearchHit>, ManagerError> {
+        let ses = self.store.get_session(session_id).await?;
+        let root = PathBuf::from(&ses.worktree_path);
+        let hits = tokio::task::spawn_blocking(move || search_files(&root, &query, limit))
+            .await
+            .map_err(|e| ManagerError::Config(format!("search_files task failed: {e}")))??;
+        Ok(hits)
+    }
+
+    /// Pencarian teks/regex linear-time dengan streaming event WS `search.result` dan dukungan cancel (`IT-301`).
+    #[cfg(feature = "ide")]
+    pub async fn search_session_text(
+        &self,
+        session_id: &str,
+        req: TextSearchRequest,
+    ) -> Result<(String, TextSearchSummary), ManagerError> {
+        let ses = self.store.get_session(session_id).await?;
+        let root = PathBuf::from(&ses.worktree_path);
+        let search_id = new_id();
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.active_searches
+            .lock()
+            .await
+            .insert(search_id.clone(), Arc::clone(&cancel));
+
+        let events_tx = self.events_tx.clone();
+        let sid_clone = search_id.clone();
+        let cancel_clone = Arc::clone(&cancel);
+
+        let summary_res = tokio::task::spawn_blocking(move || {
+            search_text(&root, &req, &cancel_clone, |hit: &TextSearchMatch| {
+                let _ = events_tx.send(DaemonEvent::SearchResult {
+                    search_id: sid_clone.clone(),
+                    path: hit.path.clone(),
+                    line: hit.line,
+                    column: hit.column,
+                    text: hit.text.clone(),
+                    done: false,
+                });
+            })
+        })
+        .await;
+
+        self.active_searches.lock().await.remove(&search_id);
+        let summary = summary_res
+            .map_err(|e| ManagerError::Config(format!("search_text task failed: {e}")))??;
+
+        let _ = self.events_tx.send(DaemonEvent::SearchResult {
+            search_id: search_id.clone(),
+            path: String::new(),
+            line: 0,
+            column: 0,
+            text: String::new(),
+            done: true,
+        });
+
+        Ok((search_id, summary))
+    }
+
+    /// Membatalkan pencarian teks yang sedang berlangsung (`DELETE /api/v1/search/{id}`).
+    #[cfg(feature = "ide")]
+    pub async fn cancel_search(&self, search_id: &str) -> bool {
+        if let Some(flag) = self.active_searches.lock().await.get(search_id) {
+            flag.store(true, std::sync::atomic::Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Mengekstrak outline simbol ringan dari satu berkas di worktree sesi (`IT-509`).
+    #[cfg(feature = "ide")]
+    pub async fn fs_outline(
+        &self,
+        session_id: &str,
+        rel_path: String,
+    ) -> Result<Vec<OutlineSymbol>, ManagerError> {
+        let file = self.fs_read(session_id, rel_path).await?;
+        let symbols = match file.content {
+            Some(content) => extract_outline(&file.path, &content),
+            None => Vec::new(),
+        };
+        Ok(symbols)
+    }
+
+    /// Membaca preferensi IDE pengguna dari `config_dir/prefs.json` (`IT-212`).
+    pub async fn get_prefs(&self) -> serde_json::Value {
+        let path = self.paths.prefs_file();
+        tokio::task::spawn_blocking(move || {
+            let Ok(raw) = std::fs::read_to_string(&path) else {
+                return serde_json::json!({});
+            };
+            serde_json::from_str(&raw).unwrap_or_else(|_| serde_json::json!({}))
+        })
+        .await
+        .unwrap_or_else(|_| serde_json::json!({}))
+    }
+
+    /// Menyimpan preferensi IDE pengguna secara atomik (`0600`) dan menyiarkan `prefs.changed` (`IT-212`).
+    pub async fn put_prefs(
+        &self,
+        prefs: serde_json::Value,
+    ) -> Result<serde_json::Value, ManagerError> {
+        if !prefs.is_object() {
+            return Err(ManagerError::Config(
+                "preferences payload must be a JSON object".to_string(),
+            ));
+        }
+        let serialized = serde_json::to_string_pretty(&prefs)
+            .map_err(|e| ManagerError::Config(format!("failed serializing prefs: {e}")))?;
+        if serialized.len() > 128 * 1024 {
+            return Err(ManagerError::Config(
+                "preferences payload exceeds 128 KiB limit".to_string(),
+            ));
+        }
+        let path = self.paths.prefs_file();
+        tokio::task::spawn_blocking(move || write_private_file(&path, serialized.as_bytes()))
+            .await
+            .map_err(|e| ManagerError::Config(format!("prefs write task failed: {e}")))?
+            .map_err(|e| ManagerError::Config(format!("failed saving prefs: {e}")))?;
+
+        let _ = self.events_tx.send(DaemonEvent::PrefsChanged);
+        Ok(prefs)
+    }
+
+    /// Mengembalikan ringkasan multi-workspace: daftar proyek beserta jumlah sesi & estimasi biaya (`IT-309`).
+    pub async fn list_workspaces(&self) -> Result<Vec<serde_json::Value>, ManagerError> {
+        let projects = self.store.list_projects().await?;
+        let sessions = self.store.list_sessions(None, None).await?;
+        let mut out = Vec::with_capacity(projects.len());
+        for proj in projects {
+            let proj_sessions: Vec<&Session> = sessions
+                .iter()
+                .filter(|s| s.project_id == proj.id)
+                .collect();
+            let active = proj_sessions
+                .iter()
+                .filter(|s| s.status == SessionStatus::Running)
+                .count();
+            let waiting = proj_sessions
+                .iter()
+                .filter(|s| s.status == SessionStatus::WaitingApproval)
+                .count();
+            let mut cost_usd = 0.0f64;
+            for s in &proj_sessions {
+                if let Ok(sum) = self.store.session_telemetry_summary(&s.id).await {
+                    cost_usd += sum.estimated_cost_usd;
+                }
+            }
+            out.push(serde_json::json!({
+                "project": proj,
+                "total_sessions": proj_sessions.len(),
+                "active_sessions": active,
+                "waiting_approval": waiting,
+                "estimated_cost_usd": cost_usd,
+            }));
+        }
+        Ok(out)
+    }
+
+    /// Membaca daftar perintah kustom pengguna dari `config_dir/commands.toml` (tidak pernah dari repo, `IT-508`).
+    pub async fn list_custom_commands(&self) -> Vec<CustomCommandConfig> {
+        let path = self.paths.commands_file();
+        tokio::task::spawn_blocking(move || load_custom_commands(&path))
+            .await
+            .unwrap_or_default()
+    }
+
+    /// Menyimpan daftar perintah kustom pengguna ke `config_dir/commands.toml` (`0600`) (`IT-508`).
+    pub async fn save_custom_commands(
+        &self,
+        commands: Vec<CustomCommandConfig>,
+    ) -> Result<Vec<CustomCommandConfig>, ManagerError> {
+        if commands.len() > 100 {
+            return Err(ManagerError::Config(
+                "too many custom commands (max 100)".to_string(),
+            ));
+        }
+        for cmd in &commands {
+            if !is_valid_identifier(&cmd.id) {
+                return Err(ManagerError::Config(format!(
+                    "invalid custom command id '{}'",
+                    cmd.id
+                )));
+            }
+            if !matches!(cmd.kind.as_str(), "prompt" | "shell") {
+                return Err(ManagerError::Config(format!(
+                    "custom command '{}' kind must be 'prompt' or 'shell'",
+                    cmd.id
+                )));
+            }
+            if cmd.title.trim().is_empty() || cmd.payload.trim().is_empty() {
+                return Err(ManagerError::Config(format!(
+                    "custom command '{}' requires non-empty title and payload",
+                    cmd.id
+                )));
+            }
+        }
+        let path = self.paths.commands_file();
+        let to_save = commands.clone();
+        tokio::task::spawn_blocking(move || save_custom_commands_file(&path, &to_save))
+            .await
+            .map_err(|e| ManagerError::Config(format!("commands write task failed: {e}")))?
+            .map_err(|e| ManagerError::Config(format!("failed saving commands.toml: {e}")))?;
+        Ok(commands)
+    }
+}
+
+fn write_private_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, bytes)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+    }
+    std::fs::rename(&tmp, path)?;
+    Ok(())
 }
 
 #[cfg(feature = "ide")]

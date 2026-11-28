@@ -16,7 +16,7 @@ use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use base64::engine::general_purpose::{STANDARD as BASE64_STD, URL_SAFE_NO_PAD};
 use base64::Engine as _;
-use latch_core::config::AgentProfile;
+use latch_core::config::{AgentProfile, CustomCommandConfig};
 use latch_core::id::{ms_to_rfc3339, now_ms};
 use latch_core::integrations::{McpServerConfig, PluginConfig};
 use latch_core::model::{
@@ -31,6 +31,8 @@ use latch_dag::DagRuntimeState;
 #[cfg(feature = "ide")]
 use latch_fs_service::{FsOpRequest, FsServiceError, FsWriteRequest};
 use latch_pty_pool::PtyFrame;
+#[cfg(feature = "ide")]
+use latch_search::{SearchError, TextSearchRequest};
 use rand::RngCore;
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
@@ -172,6 +174,12 @@ pub async fn start_http_server(
         .route("/api/v1/health", get(handle_health))
         .route("/api/v1/metrics", get(handle_metrics))
         .route("/api/v1/gc", post(handle_gc))
+        .route("/api/v1/workspaces", get(handle_list_workspaces))
+        .route("/api/v1/prefs", get(handle_get_prefs).put(handle_put_prefs))
+        .route(
+            "/api/v1/commands",
+            get(handle_list_commands).put(handle_save_commands),
+        )
         .route(
             "/api/v1/projects",
             get(handle_list_projects).post(handle_add_project),
@@ -215,6 +223,16 @@ pub async fn start_http_server(
             "/api/v1/sessions/{id}/fs/agent-touched",
             get(handle_fs_agent_touched),
         )
+        .route("/api/v1/sessions/{id}/fs/outline", get(handle_fs_outline))
+        .route(
+            "/api/v1/sessions/{id}/search/files",
+            get(handle_search_files),
+        )
+        .route(
+            "/api/v1/sessions/{id}/search/text",
+            post(handle_search_text),
+        )
+        .route("/api/v1/search/{id}", delete(handle_cancel_search))
         .route(
             "/api/v1/approvals",
             get(handle_list_approvals).post(handle_create_approval),
@@ -496,6 +514,17 @@ fn manager_err_to_response(err: ManagerError) -> Response {
             FsServiceError::Io(io_err) => api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "fs_io",
+                io_err.to_string(),
+            ),
+        },
+        #[cfg(feature = "ide")]
+        ManagerError::Search(search_err) => match search_err {
+            SearchError::InvalidQuery(msg) | SearchError::InvalidRegex(msg) => {
+                api_error(StatusCode::BAD_REQUEST, "invalid_search", msg)
+            }
+            SearchError::Io(io_err) => api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "search_io",
                 io_err.to_string(),
             ),
         },
@@ -1321,6 +1350,196 @@ async fn handle_fs_agent_touched() -> Response {
     )
 }
 
+#[cfg(feature = "ide")]
+async fn handle_fs_outline(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Query(q): Query<FsPathQuery>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Read).await {
+        return resp;
+    }
+    match state.manager.fs_outline(&id, q.path).await {
+        Ok(symbols) => Json(json!({ "symbols": symbols })).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+#[cfg(not(feature = "ide"))]
+async fn handle_fs_outline() -> Response {
+    api_error(
+        StatusCode::NOT_IMPLEMENTED,
+        "not_implemented",
+        "IDE feature disabled",
+    )
+}
+
+#[derive(Deserialize)]
+struct SearchFilesQuery {
+    #[serde(default)]
+    q: String,
+    limit: Option<usize>,
+}
+
+#[cfg(feature = "ide")]
+async fn handle_search_files(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Query(q): Query<SearchFilesQuery>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Read).await {
+        return resp;
+    }
+    match state
+        .manager
+        .search_session_files(&id, q.q, q.limit.unwrap_or(50))
+        .await
+    {
+        Ok(hits) => Json(json!({ "files": hits })).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+#[cfg(not(feature = "ide"))]
+async fn handle_search_files() -> Response {
+    api_error(
+        StatusCode::NOT_IMPLEMENTED,
+        "not_implemented",
+        "IDE feature disabled",
+    )
+}
+
+#[cfg(feature = "ide")]
+async fn handle_search_text(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<TextSearchRequest>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Read).await {
+        return resp;
+    }
+    match state.manager.search_session_text(&id, body).await {
+        Ok((search_id, summary)) => Json(json!({
+            "search_id": search_id,
+            "matches": summary.matches,
+            "truncated": summary.truncated,
+            "timed_out": summary.timed_out,
+            "scanned_files": summary.scanned_files
+        }))
+        .into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+#[cfg(not(feature = "ide"))]
+async fn handle_search_text() -> Response {
+    api_error(
+        StatusCode::NOT_IMPLEMENTED,
+        "not_implemented",
+        "IDE feature disabled",
+    )
+}
+
+#[cfg(feature = "ide")]
+async fn handle_cancel_search(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Read).await {
+        return resp;
+    }
+    let cancelled = state.manager.cancel_search(&id).await;
+    Json(json!({ "search_id": id, "cancelled": cancelled })).into_response()
+}
+
+#[cfg(not(feature = "ide"))]
+async fn handle_cancel_search() -> Response {
+    api_error(
+        StatusCode::NOT_IMPLEMENTED,
+        "not_implemented",
+        "IDE feature disabled",
+    )
+}
+
+async fn handle_list_workspaces(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Read).await {
+        return resp;
+    }
+    match state.manager.list_workspaces().await {
+        Ok(list) => Json(list).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+async fn handle_get_prefs(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Read).await {
+        return resp;
+    }
+    Json(state.manager.get_prefs().await).into_response()
+}
+
+async fn handle_put_prefs(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Write).await {
+        return resp;
+    }
+    match state.manager.put_prefs(body).await {
+        Ok(saved) => Json(saved).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+async fn handle_list_commands(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Read).await {
+        return resp;
+    }
+    Json(state.manager.list_custom_commands().await).into_response()
+}
+
+#[derive(Deserialize)]
+struct SaveCommandsBody {
+    commands: Vec<CustomCommandConfig>,
+}
+
+async fn handle_save_commands(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(body): Json<SaveCommandsBody>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Admin).await {
+        return resp;
+    }
+    match state.manager.save_custom_commands(body.commands).await {
+        Ok(saved) => Json(saved).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
 async fn handle_upsert_agent(
     State(state): State<HttpState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -1901,6 +2120,39 @@ async fn handle_events_ws(
                                 "session_id": session_id,
                                 "paths": paths,
                                 "by": by
+                            });
+                            if socket.send(Message::Text(msg.to_string().into())).await.is_err() {
+                                break;
+                            }
+                        }
+                        Ok(DaemonEvent::SearchResult {
+                            search_id,
+                            path,
+                            line,
+                            column,
+                            text,
+                            done,
+                        }) => {
+                            let seq = state.event_seq.fetch_add(1, Ordering::Relaxed);
+                            let msg = json!({
+                                "seq": seq,
+                                "type": "search.result",
+                                "search_id": search_id,
+                                "path": path,
+                                "line": line,
+                                "column": column,
+                                "text": text,
+                                "done": done
+                            });
+                            if socket.send(Message::Text(msg.to_string().into())).await.is_err() {
+                                break;
+                            }
+                        }
+                        Ok(DaemonEvent::PrefsChanged) => {
+                            let seq = state.event_seq.fetch_add(1, Ordering::Relaxed);
+                            let msg = json!({
+                                "seq": seq,
+                                "type": "prefs.changed"
                             });
                             if socket.send(Message::Text(msg.to_string().into())).await.is_err() {
                                 break;

@@ -5,6 +5,9 @@ Format mengikuti [Keep a Changelog](https://keepachangelog.com/id-ID/1.1.0/) dan
 ## [Unreleased]
 
 ### Added
+- **Pencarian Fuzzy & Regex Linear, Outline Simbol, Preferensi Daemon, Multi-Workspace & Perintah Kustom (`IT-211`, `IT-212`, `IT-301`, `IT-309`, `IT-508`, `IT-509`):**
+  - `latch-search`: pencarian nama berkas fuzzy (`search_files`), pencarian teks/regex linear-time non-backtracking (`search_text` dengan batas 2 MiB/berkas, 2000 hasil, timeout 10 detik, dan pembatalan atomik — anti-ReDoS `IT11`), serta ekstraktor outline simbol ringan (`extract_outline`).
+  - `latch-daemon` & `latch-core`: rute `/api/v1/sessions/{id}/search/{files,text}`, `DELETE /api/v1/search/{id}`, `GET /api/v1/sessions/{id}/fs/outline`, `GET/PUT /api/v1/prefs` (`prefs.json` `0600` + event WS `prefs.changed`), `GET /api/v1/workspaces`, `GET/PUT /api/v1/commands` (`commands.toml` khusus konfigurasi pengguna `IT10`), serta bagian `[ide]` di `config.toml` (`allow_host_shell = false` bawaan).
 - **Pemantau Berkas Worktree & Deteksi Sentuhan Agen (`IT-203`, `IT-207`, `FR-I53`, `FR-I42`):**
   - `latch-fs-service`: menambahkan modul `watcher::SessionWatchTracker` tanpa dependensi tambahan dengan batas memori 20.000 berkas per worktree (`NFR-I05`), mengabaikan `.git/`/`target/`/`node_modules/`, serta membedakan penulisan UI (`by: "user"`) dari modifikasi agen (`by: "agent"`).
   - `latch-daemon`: menjalankan pemantau latar belakang yang memancarkan event WebSocket `fs.changed`, menandai `agent_touched` pada `GET /fs/tree`, dan mengekspos `GET /api/v1/sessions/{id}/fs/agent-touched`.

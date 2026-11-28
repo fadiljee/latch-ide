@@ -10,4 +10,9 @@ workspace = true
 
 [dependencies]
 latch-core = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
