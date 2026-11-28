@@ -13,6 +13,7 @@ const ROUTES: readonly AppRoute[] = [
   "workspace",
   "automations",
   "bots",
+  "plugins",
   "hosts",
   "usage",
   "settings",

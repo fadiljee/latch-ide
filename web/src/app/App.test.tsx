@@ -34,6 +34,17 @@ describe("Latch IDE AppShell", () => {
     fireEvent.click(screen.getByRole("button", { name: "Bento" }));
     expect(document.documentElement.dataset.style).toBe("bento");
 
+    // Navigasi ke Agen & Integrasi
+    fireEvent.click(screen.getByRole("button", { name: "Agen" }));
+    expect(
+      screen.getByRole("heading", { name: "Semua Agen Coding (OAuth & API Key)" }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Integrasi" }));
+    expect(
+      screen.getByRole("heading", { name: "Integrasi GitHub, MCP & Plugin" }),
+    ).toBeInTheDocument();
+
     // Navigasi ke Automasi
     fireEvent.click(screen.getByRole("button", { name: "Automasi" }));
     expect(screen.getByRole("heading", { name: "Pipeline DAG & Arena" })).toBeInTheDocument();

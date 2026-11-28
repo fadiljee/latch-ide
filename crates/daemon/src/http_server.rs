@@ -12,11 +12,13 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, Path as AxumPath, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use base64::engine::general_purpose::{STANDARD as BASE64_STD, URL_SAFE_NO_PAD};
 use base64::Engine as _;
+use latch_core::config::AgentProfile;
 use latch_core::id::{ms_to_rfc3339, now_ms};
+use latch_core::integrations::{McpServerConfig, PluginConfig};
 use latch_core::model::{
     ApprovalActionType, ApprovalDecision, AuditEntry, MergeStrategy, Session,
     SessionTelemetrySummary,
@@ -220,6 +222,39 @@ pub async fn start_http_server(
         .route(
             "/api/v1/pipelines/{id}/arena/select",
             post(handle_pipeline_arena_select),
+        )
+        .route("/api/v1/agents", get(handle_list_agents))
+        .route(
+            "/api/v1/agents/{id}",
+            put(handle_upsert_agent).delete(handle_delete_agent),
+        )
+        .route(
+            "/api/v1/agents/{id}/runtime-key",
+            post(handle_set_agent_runtime_key),
+        )
+        .route("/api/v1/agents/{id}/login", post(handle_agent_login))
+        .route("/api/v1/integrations/github", get(handle_github_status))
+        .route(
+            "/api/v1/integrations/github/repos",
+            get(handle_github_repos),
+        )
+        .route(
+            "/api/v1/integrations/github/login",
+            post(handle_github_login),
+        )
+        .route(
+            "/api/v1/integrations/github/clone",
+            post(handle_github_clone),
+        )
+        .route("/api/v1/mcp", get(handle_list_mcp))
+        .route(
+            "/api/v1/mcp/{id}",
+            put(handle_upsert_mcp).delete(handle_delete_mcp),
+        )
+        .route("/api/v1/plugins", get(handle_list_plugins))
+        .route(
+            "/api/v1/plugins/{id}",
+            put(handle_upsert_plugin).delete(handle_delete_plugin),
         )
         .route("/api/v1/ws", get(handle_events_ws))
         .route("/api/v1/sessions/{id}/pty", get(handle_pty_ws))
@@ -934,6 +969,243 @@ async fn handle_cancel_pipeline(
     }
     match state.manager.cancel_pipeline(&id).await {
         Ok(run) => Json(run).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+async fn handle_list_agents(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+        return resp;
+    }
+    Json(state.manager.list_agents().await).into_response()
+}
+
+async fn handle_upsert_agent(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(profile): Json<AgentProfile>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+        return resp;
+    }
+    match state.manager.upsert_agent(id, profile).await {
+        Ok(status) => Json(status).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+async fn handle_delete_agent(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+        return resp;
+    }
+    match state.manager.delete_agent(&id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+#[derive(Deserialize)]
+struct RuntimeKeyBody {
+    api_key: Option<String>,
+}
+
+async fn handle_set_agent_runtime_key(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<RuntimeKeyBody>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+        return resp;
+    }
+    match state.manager.set_agent_runtime_key(&id, body.api_key).await {
+        Ok(status) => Json(status).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+#[derive(Deserialize, Default)]
+struct InteractiveLoginBody {
+    project: Option<String>,
+}
+
+async fn handle_agent_login(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    body: Option<Json<InteractiveLoginBody>>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+        return resp;
+    }
+    let project = body.and_then(|Json(b)| b.project);
+    match state.manager.start_agent_login_session(&id, project).await {
+        Ok(ses) => (StatusCode::CREATED, Json(ses)).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+async fn handle_github_status(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+        return resp;
+    }
+    Json(state.manager.github_status().await).into_response()
+}
+
+async fn handle_github_repos(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+        return resp;
+    }
+    match state.manager.github_list_repos().await {
+        Ok(list) => Json(list).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+async fn handle_github_login(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    body: Option<Json<InteractiveLoginBody>>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+        return resp;
+    }
+    let project = body.and_then(|Json(b)| b.project);
+    match state.manager.start_github_login_session(project).await {
+        Ok(ses) => (StatusCode::CREATED, Json(ses)).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+#[derive(Deserialize)]
+struct GitHubCloneBody {
+    repo: String,
+    target_dir: Option<String>,
+}
+
+async fn handle_github_clone(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(body): Json<GitHubCloneBody>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+        return resp;
+    }
+    match state
+        .manager
+        .github_clone_repo(&body.repo, body.target_dir)
+        .await
+    {
+        Ok(proj) => (StatusCode::CREATED, Json(proj)).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+async fn handle_list_mcp(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+        return resp;
+    }
+    Json(state.manager.list_mcp_servers().await).into_response()
+}
+
+async fn handle_upsert_mcp(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(mut server): Json<McpServerConfig>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+        return resp;
+    }
+    server.id = id;
+    match state.manager.upsert_mcp_server(server).await {
+        Ok(saved) => Json(saved).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+async fn handle_delete_mcp(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+        return resp;
+    }
+    match state.manager.delete_mcp_server(&id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+async fn handle_list_plugins(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+        return resp;
+    }
+    Json(state.manager.list_plugins().await).into_response()
+}
+
+async fn handle_upsert_plugin(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(mut plugin): Json<PluginConfig>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+        return resp;
+    }
+    plugin.id = id;
+    match state.manager.upsert_plugin(plugin).await {
+        Ok(saved) => Json(saved).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+async fn handle_delete_plugin(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+        return resp;
+    }
+    match state.manager.delete_plugin(&id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(err) => manager_err_to_response(err),
     }
 }

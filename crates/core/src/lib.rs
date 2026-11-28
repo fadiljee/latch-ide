@@ -3,6 +3,7 @@
 
 pub mod config;
 pub mod id;
+pub mod integrations;
 pub mod model;
 pub mod pricing;
 pub mod protocol;

@@ -1,11 +1,16 @@
 import {
+  fetchAgents,
+  fetchGitHubStatus,
   fetchHealth,
+  fetchMcpServers,
   fetchPendingApprovals,
   fetchPipelines,
+  fetchPlugins,
   fetchProjects,
   fetchSessions,
 } from "./daemon-client";
 import { useHostsStore } from "../state/hosts";
+import { useIntegrationsStore } from "../state/integrations";
 import { useLayoutStore } from "../state/layout";
 import { useNotificationsStore } from "../state/notifications";
 import { useSessionsStore } from "../state/sessions";
@@ -13,6 +18,7 @@ import { useUsageStore } from "../state/usage";
 
 export async function syncAllFromDaemon(token: string): Promise<void> {
   const hosts = useHostsStore.getState();
+  const integrations = useIntegrationsStore.getState();
   const sessionsStore = useSessionsStore.getState();
   const layoutStore = useLayoutStore.getState();
   const notifStore = useNotificationsStore.getState();
@@ -20,13 +26,18 @@ export async function syncAllFromDaemon(token: string): Promise<void> {
 
   hosts.setLoading(true);
   try {
-    const [health, projects, sessions, approvals, pipelines] = await Promise.all([
-      fetchHealth().catch(() => null),
-      fetchProjects(token),
-      fetchSessions(token),
-      fetchPendingApprovals(token).catch(() => []),
-      fetchPipelines(token).catch(() => []),
-    ]);
+    const [health, projects, sessions, approvals, pipelines, agents, github, mcpServers, plugins] =
+      await Promise.all([
+        fetchHealth().catch(() => null),
+        fetchProjects(token),
+        fetchSessions(token),
+        fetchPendingApprovals(token).catch(() => []),
+        fetchPipelines(token).catch(() => []),
+        fetchAgents(token).catch(() => []),
+        fetchGitHubStatus(token).catch(() => null),
+        fetchMcpServers(token).catch(() => []),
+        fetchPlugins(token).catch(() => []),
+      ]);
 
     if (health) {
       hosts.setHealth(health);
@@ -35,6 +46,14 @@ export async function syncAllFromDaemon(token: string): Promise<void> {
     sessionsStore.upsertMany(sessions);
     notifStore.setApprovals(approvals);
     usageStore.setPipelines(pipelines);
+    if (agents.length > 0) {
+      integrations.setAgents(agents);
+    }
+    if (github) {
+      integrations.setGitHub(github);
+    }
+    integrations.setMcpServers(mcpServers);
+    integrations.setPlugins(plugins);
     hosts.setError(null);
 
     const active = layoutStore.activeSessionId;

@@ -15,6 +15,7 @@ export interface Catalog {
     workspace: string;
     automations: string;
     bots: string;
+    plugins: string;
     hosts: string;
     usage: string;
     settings: string;
@@ -132,6 +133,80 @@ export interface Catalog {
     tokenLabel: string;
     languageLabel: string;
   };
+  agents: {
+    addCustom: string;
+    searchPlaceholder: string;
+    filterAll: string;
+    filterInstalled: string;
+    filterCustom: string;
+    installed: string;
+    notInstalled: string;
+    authLabel: string;
+    oauthMode: string;
+    apiKeyMode: string;
+    loginOauth: string;
+    launchSession: string;
+    removeCustom: string;
+    apiKeyEnvLabel: string;
+    apiKeyConfiguredEnv: string;
+    apiKeyConfiguredMemory: string;
+    apiKeyMissing: string;
+    runtimeKeyPlaceholder: string;
+    saveRuntimeKey: string;
+    clearRuntimeKey: string;
+    runtimeKeyHint: string;
+    customDialogTitle: string;
+    idLabel: string;
+    displayNameLabel: string;
+    commandLabel: string;
+    argsLabel: string;
+    loginCmdLabel: string;
+    providerLabel: string;
+    saveAgent: string;
+    cancel: string;
+    activeSessions: string;
+    emptySearch: string;
+  };
+  integrations: {
+    heading: string;
+    subtitle: string;
+    githubTab: string;
+    mcpTab: string;
+    pluginsTab: string;
+    ghConnected: string;
+    ghDisconnected: string;
+    ghNotInstalled: string;
+    ghConnectOauth: string;
+    ghRefreshRepos: string;
+    ghClonePlaceholder: string;
+    ghCloneButton: string;
+    ghCloneAndAdd: string;
+    ghNoRepos: string;
+    mcpAddHeading: string;
+    mcpPresetsHeading: string;
+    mcpEmpty: string;
+    mcpIdLabel: string;
+    mcpNameLabel: string;
+    mcpTransportLabel: string;
+    mcpCommandLabel: string;
+    mcpArgsLabel: string;
+    mcpUrlLabel: string;
+    mcpEnvKeysLabel: string;
+    mcpEnvKeysHint: string;
+    mcpSave: string;
+    pluginsAddHeading: string;
+    pluginsPresetsHeading: string;
+    pluginsEmpty: string;
+    pluginKindLabel: string;
+    pluginSourceLabel: string;
+    pluginDescLabel: string;
+    pluginSave: string;
+    installPreset: string;
+    installedPreset: string;
+    enabled: string;
+    disabled: string;
+    remove: string;
+  };
   palette: {
     placeholder: string;
     empty: string;
@@ -139,6 +214,8 @@ export interface Catalog {
     toggleSidePanel: string;
     toggleSplit: string;
     openNewSession: string;
+    openAgents: string;
+    openPlugins: string;
     openSettings: string;
     openFloating: string;
   };
@@ -165,6 +242,7 @@ export const CATALOGS: Record<Locale, Catalog> = {
       workspace: "Workspace",
       automations: "Automasi",
       bots: "Agen",
+      plugins: "Integrasi",
       hosts: "Host",
       usage: "Penggunaan",
       settings: "Pengaturan",
@@ -265,8 +343,9 @@ export const CATALOGS: Record<Locale, Catalog> = {
       runButton: "Jalankan Pipeline",
     },
     pages: {
-      botsHeading: "Profil Agen Terdaftar",
-      botsSubtitle: "Profil bawaan yang siap dijalankan di git worktree terisolasi.",
+      botsHeading: "Semua Agen Coding (OAuth & API Key)",
+      botsSubtitle:
+        "Dukungan penuh Antigravity (agy), Claude, Codex, Gemini, OpenCode, dan CLI agen lainnya. Default OAuth, dapat beralih ke API Key kapan saja.",
       hostsHeading: "Daemon & Host Terhubung",
       hostsSubtitle: "Status runtime daemon lokal dan panduan terowongan SSH aman.",
       remoteHint: "Hubungkan host jarak jauh tanpa listener publik dengan `latch remote user@host`.",
@@ -282,6 +361,81 @@ export const CATALOGS: Record<Locale, Catalog> = {
       tokenLabel: "Bearer Token Daemon",
       languageLabel: "Bahasa Antarmuka",
     },
+    agents: {
+      addCustom: "+ Tambah Agen",
+      searchPlaceholder: "Cari agen (antigravity, claude, codex, opencode...)",
+      filterAll: "Semua",
+      filterInstalled: "Terpasang",
+      filterCustom: "Custom",
+      installed: "Terpasang",
+      notInstalled: "Belum terpasang",
+      authLabel: "Mode Login",
+      oauthMode: "OAuth (Default)",
+      apiKeyMode: "API Key",
+      loginOauth: "Login OAuth",
+      launchSession: "Jalankan",
+      removeCustom: "Hapus",
+      apiKeyEnvLabel: "Variabel Env",
+      apiKeyConfiguredEnv: "Siap (Host Env)",
+      apiKeyConfiguredMemory: "Siap (RAM Sesi)",
+      apiKeyMissing: "Belum diset",
+      runtimeKeyPlaceholder: "Tempel API key sementara (RAM daemon saja)...",
+      saveRuntimeKey: "Simpan RAM",
+      clearRuntimeKey: "Hapus",
+      runtimeKeyHint: "Kunci hanya disimpan di RAM daemon selama sesi aktif, tidak pernah ditulis ke disk atau SQLite.",
+      customDialogTitle: "Tambah Profil Agen CLI Custom",
+      idLabel: "ID Profil (huruf/angka/-/_)",
+      displayNameLabel: "Nama Tampilan",
+      commandLabel: "Perintah Biner CLI",
+      argsLabel: "Argumen Default (pisah spasi)",
+      loginCmdLabel: "Perintah Login OAuth (opsional, pisah spasi)",
+      providerLabel: "Provider Proxy (opsional untuk mode API Key)",
+      saveAgent: "Simpan Agen",
+      cancel: "Batal",
+      activeSessions: "Sesi aktif",
+      emptySearch: "Tidak ada agen yang cocok dengan filter saat ini.",
+    },
+    integrations: {
+      heading: "Integrasi GitHub, MCP & Plugin",
+      subtitle:
+        "Hubungkan GitHub lewat OAuth (`gh`), daftarkan server Model Context Protocol (MCP), dan aktifkan plugin tambahan untuk seluruh agen.",
+      githubTab: "GitHub",
+      mcpTab: "MCP Servers",
+      pluginsTab: "Plugins",
+      ghConnected: "Terhubung ke GitHub",
+      ghDisconnected: "Belum login GitHub",
+      ghNotInstalled: "GitHub CLI (`gh`) belum terpasang di sistem.",
+      ghConnectOauth: "Login GitHub (OAuth)",
+      ghRefreshRepos: "Muat Repositori",
+      ghClonePlaceholder: "owner/nama-repo",
+      ghCloneButton: "Clone & Tambah",
+      ghCloneAndAdd: "Clone ke Latch",
+      ghNoRepos: "Klik Muat Repositori untuk menampilkan daftar repo akun GitHub Anda.",
+      mcpAddHeading: "Tambah Server MCP Custom",
+      mcpPresetsHeading: "Preset MCP Populer (1-Klik)",
+      mcpEmpty: "Belum ada server MCP terdaftar. Pilih preset di atas atau tambahkan server baru.",
+      mcpIdLabel: "ID Server",
+      mcpNameLabel: "Nama Server",
+      mcpTransportLabel: "Transport",
+      mcpCommandLabel: "Perintah (stdio)",
+      mcpArgsLabel: "Argumen (pisah spasi)",
+      mcpUrlLabel: "Endpoint URL (http)",
+      mcpEnvKeysLabel: "Nama Env Key (pisah koma, bukan nilainya)",
+      mcpEnvKeysHint: "Simpan nama variabel lingkungan saja (contoh: GITHUB_PERSONAL_ACCESS_TOKEN).",
+      mcpSave: "Simpan Server MCP",
+      pluginsAddHeading: "Daftarkan Plugin Custom",
+      pluginsPresetsHeading: "Katalog Plugin Cepat",
+      pluginsEmpty: "Belum ada plugin aktif. Pasang dari katalog atau tambahkan plugin custom.",
+      pluginKindLabel: "Kategori Plugin",
+      pluginSourceLabel: "Sumber (repo GitHub, paket npm/cargo, atau path)",
+      pluginDescLabel: "Deskripsi Singkat",
+      pluginSave: "Simpan Plugin",
+      installPreset: "Pasang",
+      installedPreset: "Terpasang",
+      enabled: "Aktif",
+      disabled: "Nonaktif",
+      remove: "Hapus",
+    },
     palette: {
       placeholder: "Ketik perintah atau nama sesi...",
       empty: "Tidak ada perintah yang cocok.",
@@ -289,6 +443,8 @@ export const CATALOGS: Record<Locale, Catalog> = {
       toggleSidePanel: "Buka/Tutup Panel Kanan",
       toggleSplit: "Aktifkan/Matikan Split Pane",
       openNewSession: "Buat Sesi Agen Baru",
+      openAgents: "Kelola Agen (OAuth & API Key)",
+      openPlugins: "Buka Integrasi (GitHub, MCP, Plugin)",
       openSettings: "Buka Pengaturan",
       openFloating: "Buka Jendela Mengambang",
     },
@@ -313,6 +469,7 @@ export const CATALOGS: Record<Locale, Catalog> = {
       workspace: "Workspace",
       automations: "Automations",
       bots: "Agents",
+      plugins: "Integrations",
       hosts: "Hosts",
       usage: "Usage",
       settings: "Settings",
@@ -413,8 +570,9 @@ export const CATALOGS: Record<Locale, Catalog> = {
       runButton: "Run Pipeline",
     },
     pages: {
-      botsHeading: "Registered Agent Profiles",
-      botsSubtitle: "Built-in profiles ready to execute inside isolated git worktrees.",
+      botsHeading: "All Coding Agents (OAuth & API Key)",
+      botsSubtitle:
+        "Built-in support for Antigravity (agy), Claude, Codex, Gemini, OpenCode, and custom CLIs. OAuth by default, API Key optional.",
       hostsHeading: "Daemon & Connected Hosts",
       hostsSubtitle: "Local daemon runtime status and secure SSH forwarding instructions.",
       remoteHint: "Connect remote hosts without public listeners via `latch remote user@host`.",
@@ -430,6 +588,81 @@ export const CATALOGS: Record<Locale, Catalog> = {
       tokenLabel: "Daemon Bearer Token",
       languageLabel: "Interface Language",
     },
+    agents: {
+      addCustom: "+ Add Agent",
+      searchPlaceholder: "Filter agents (antigravity, claude, codex, opencode...)",
+      filterAll: "All",
+      filterInstalled: "Installed",
+      filterCustom: "Custom",
+      installed: "Installed",
+      notInstalled: "Not installed",
+      authLabel: "Auth Mode",
+      oauthMode: "OAuth (Default)",
+      apiKeyMode: "API Key",
+      loginOauth: "OAuth Login",
+      launchSession: "Launch",
+      removeCustom: "Delete",
+      apiKeyEnvLabel: "Env Variable",
+      apiKeyConfiguredEnv: "Ready (Host Env)",
+      apiKeyConfiguredMemory: "Ready (Session RAM)",
+      apiKeyMissing: "Not set",
+      runtimeKeyPlaceholder: "Paste temporary API key (daemon RAM only)...",
+      saveRuntimeKey: "Set in RAM",
+      clearRuntimeKey: "Clear",
+      runtimeKeyHint: "Stored in daemon memory only for active runtime, never written to disk or SQLite.",
+      customDialogTitle: "Add Custom CLI Agent Profile",
+      idLabel: "Profile ID (letters/digits/-/_)",
+      displayNameLabel: "Display Name",
+      commandLabel: "CLI Binary Command",
+      argsLabel: "Default Args (space-separated)",
+      loginCmdLabel: "OAuth Login Command (optional, space-separated)",
+      providerLabel: "Proxy Provider (optional for API Key mode)",
+      saveAgent: "Save Agent",
+      cancel: "Cancel",
+      activeSessions: "Active sessions",
+      emptySearch: "No agents match your current filter.",
+    },
+    integrations: {
+      heading: "GitHub, MCP & Plugins",
+      subtitle:
+        "Connect GitHub via OAuth (`gh`), register Model Context Protocol (MCP) servers, and enable plugins across all agents.",
+      githubTab: "GitHub",
+      mcpTab: "MCP Servers",
+      pluginsTab: "Plugins",
+      ghConnected: "Connected to GitHub",
+      ghDisconnected: "GitHub not authenticated",
+      ghNotInstalled: "GitHub CLI (`gh`) is not installed on this machine.",
+      ghConnectOauth: "Connect GitHub (OAuth)",
+      ghRefreshRepos: "Load Repositories",
+      ghClonePlaceholder: "owner/repo-name",
+      ghCloneButton: "Clone & Add",
+      ghCloneAndAdd: "Clone to Latch",
+      ghNoRepos: "Click Load Repositories to fetch your GitHub repositories.",
+      mcpAddHeading: "Add Custom MCP Server",
+      mcpPresetsHeading: "Popular MCP Presets (1-Click)",
+      mcpEmpty: "No MCP servers configured yet. Install a preset above or add a custom server.",
+      mcpIdLabel: "Server ID",
+      mcpNameLabel: "Display Name",
+      mcpTransportLabel: "Transport",
+      mcpCommandLabel: "Command (stdio)",
+      mcpArgsLabel: "Arguments (space-separated)",
+      mcpUrlLabel: "Endpoint URL (http)",
+      mcpEnvKeysLabel: "Env Key Names (comma-separated, never values)",
+      mcpEnvKeysHint: "Store environment variable names only (e.g. GITHUB_PERSONAL_ACCESS_TOKEN).",
+      mcpSave: "Save MCP Server",
+      pluginsAddHeading: "Register Custom Plugin",
+      pluginsPresetsHeading: "Quick Plugin Catalog",
+      pluginsEmpty: "No plugins registered yet. Install from the catalog or add a custom plugin.",
+      pluginKindLabel: "Plugin Kind",
+      pluginSourceLabel: "Source (GitHub repo, npm/cargo package, or path)",
+      pluginDescLabel: "Short Description",
+      pluginSave: "Save Plugin",
+      installPreset: "Install",
+      installedPreset: "Installed",
+      enabled: "Enabled",
+      disabled: "Disabled",
+      remove: "Delete",
+    },
     palette: {
       placeholder: "Type a command or session name...",
       empty: "No matching commands.",
@@ -437,6 +670,8 @@ export const CATALOGS: Record<Locale, Catalog> = {
       toggleSidePanel: "Toggle Side Panel",
       toggleSplit: "Toggle Split Pane",
       openNewSession: "New Agent Session",
+      openAgents: "Manage Agents (OAuth & API Key)",
+      openPlugins: "Open Integrations (GitHub, MCP, Plugins)",
       openSettings: "Open Settings",
       openFloating: "Toggle Floating Control",
     },

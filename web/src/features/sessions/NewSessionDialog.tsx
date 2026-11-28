@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
 import { Input } from "../../components/ui/Input";
 import type { Catalog } from "../../lib/i18n/catalog";
 import { useHostsStore } from "../../state/hosts";
+import { useIntegrationsStore } from "../../state/integrations";
 import { useLayoutStore } from "../../state/layout";
 import { useNotificationsStore } from "../../state/notifications";
 import { useSessionsStore } from "../../state/sessions";
@@ -28,16 +29,31 @@ export function NewSessionDialog({
   const projects = useHostsStore((s) => s.projects);
   const token = useHostsStore((s) => s.token);
   const addProjectLocal = useHostsStore((s) => s.addProjectLocal);
+  const agents = useIntegrationsStore((s) => s.agents);
+  const preferredProfile = useIntegrationsStore((s) => s.preferredProfile);
+  const setPreferredProfile = useIntegrationsStore((s) => s.setPreferredProfile);
   const upsertOne = useSessionsStore((s) => s.upsertOne);
   const setActiveSession = useLayoutStore((s) => s.setActiveSession);
   const pushToast = useNotificationsStore((s) => s.pushToast);
 
+  const defaultProfile =
+    preferredProfile ||
+    agents.find((a) => a.installed && a.profile.category !== "shell")?.id ||
+    agents[0]?.id ||
+    "antigravity";
+
   const [project, setProject] = useState("");
-  const [profile, setProfile] = useState("claude");
+  const [profile, setProfile] = useState(defaultProfile);
   const [task, setTask] = useState("");
   const [baseRef, setBaseRef] = useState("");
   const [repoPath, setRepoPath] = useState("");
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      setProfile(defaultProfile);
+    }
+  }, [open, defaultProfile]);
 
   const selectedProject = project || projects[0]?.name || "";
 
@@ -77,6 +93,7 @@ export function NewSessionDialog({
       setActiveRoute("workspace");
       setTask("");
       setBaseRef("");
+      setPreferredProfile(null);
       setOpen(false);
     } catch (err) {
       pushToast("danger", err instanceof Error ? err.message : "Failed starting session");
