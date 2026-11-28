@@ -1,4 +1,5 @@
-// Memeriksa anggaran ukuran bundel gzipped sesuai docs/ide/IDE_NFR_BUDGET.md (IT-007).
+// Memeriksa anggaran ukuran bundel gzipped sesuai docs/ide/IDE_NFR_BUDGET.md (IT-007, IT-117).
+// Memisahkan bundel initial load (direferensikan index.html <= 600 KiB) dan total seluruh chunk lazy (<= 3 MiB).
 import fs from "node:fs";
 import path from "node:path";
 import zlib from "node:zlib";
@@ -20,22 +21,51 @@ function walk(dir) {
   return out;
 }
 
+function collectInitialRelPaths(indexHtml) {
+  const refs = new Set(["index.html"]);
+  const attrRegex = /(?:src|href)="\/?([^"]+)"/g;
+  for (const match of indexHtml.matchAll(attrRegex)) {
+    const ref = match[1];
+    if (ref && /\.(js|css)$/.test(ref)) {
+      refs.add(ref);
+    }
+  }
+  return refs;
+}
+
 if (!fs.existsSync(distDir)) {
   console.error(`dist directory missing: ${distDir}`);
   process.exit(1);
 }
 
+const indexPath = path.join(distDir, "index.html");
+const initialRefs = fs.existsSync(indexPath)
+  ? collectInitialRelPaths(fs.readFileSync(indexPath, "utf8"))
+  : new Set();
+
+let initialGzip = 0;
 let totalGzip = 0;
+
 for (const file of walk(distDir)) {
   const raw = fs.readFileSync(file);
   const gz = zlib.gzipSync(raw, { level: 9 }).length;
+  const rel = path.relative(distDir, file).split(path.sep).join("/");
   totalGzip += gz;
-  const rel = path.relative(distDir, file);
-  console.log(`  ${rel}: raw=${raw.length}B gzip=${gz}B`);
+  const isInitial = initialRefs.has(rel);
+  if (isInitial) {
+    initialGzip += gz;
+  }
+  console.log(`  ${rel}: raw=${raw.length}B gzip=${gz}B${isInitial ? " [initial]" : ""}`);
 }
 
-console.log(`Total gzipped bundle: ${totalGzip}B (limit initial=${MAX_INITIAL_GZIP}B, total=${MAX_TOTAL_GZIP}B)`);
-if (totalGzip > MAX_INITIAL_GZIP || totalGzip > MAX_TOTAL_GZIP) {
-  console.error("Bundle size budget exceeded!");
+console.log(
+  `Bundle budget: initial=${initialGzip}B (limit=${MAX_INITIAL_GZIP}B), total=${totalGzip}B (limit=${MAX_TOTAL_GZIP}B)`,
+);
+if (initialGzip > MAX_INITIAL_GZIP) {
+  console.error(`Initial gzipped bundle exceeded budget: ${initialGzip}B > ${MAX_INITIAL_GZIP}B`);
+  process.exit(1);
+}
+if (totalGzip > MAX_TOTAL_GZIP) {
+  console.error(`Total gzipped bundle exceeded budget: ${totalGzip}B > ${MAX_TOTAL_GZIP}B`);
   process.exit(1);
 }

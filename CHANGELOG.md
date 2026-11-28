@@ -5,6 +5,9 @@ Format mengikuti [Keep a Changelog](https://keepachangelog.com/id-ID/1.1.0/) dan
 ## [Unreleased]
 
 ### Added
+- **E2E Milestone I1 & Gerbang Bundel Initial vs Total (`IT-117`, DoD I1):**
+  - `web/scripts/check-bundle-size.mjs`: memisahkan perhitungan anggaran bundel **initial load** (referensi `index.html`, batas `600 KiB` gzip) dan **total seluruh chunk lazy** (batas `3 MiB` gzip) sesuai `IDE_NFR_BUDGET.md`.
+  - `web/src/app/I1Flow.test.tsx`: tes alur E2E Milestone I1 (Papan Mission Control → Diff anti-XSS `IT3` → Inbox Persetujuan → Grid Terminal 2×2).
 - **Papan Sesi Mission Control (`IT-107`, `FR-I10`, `FR-I12`):**
   - `web/`: menambahkan `SessionBoard` (lazy-loaded) dengan 5 kolom status live (`Menunggu Anda`, `Berjalan`, `Perlu Perhatian`, `Selesai`, `Hibernasi`), kartu ringkas berisikan profil agen/proyek/biaya, tombol aksi cepat (`Terminal`, `Diff`, `Jeda`, `Lanjut`), pengalih `Papan` di `StatusBar` & `CommandPalette`, serta unit test `SessionBoard.test.tsx`.
 - **Integrasi Antigravity CLI (`agy`) Kelas Satu di Latch IDE:**
