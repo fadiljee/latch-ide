@@ -97,7 +97,12 @@ fn try_redact_bearer(input: &str, idx: usize, out: &mut String) -> Option<usize>
         return None;
     }
     let rest = &input[idx..];
-    if rest.len() <= 7 || !rest[..7].eq_ignore_ascii_case("bearer ") {
+    if rest.len() <= 7
+        || rest
+            .as_bytes()
+            .get(..7)
+            .is_none_or(|prefix| !prefix.eq_ignore_ascii_case(b"bearer "))
+    {
         return None;
     }
     let bytes = input.as_bytes();
@@ -123,7 +128,12 @@ fn try_redact_header_kv(input: &str, idx: usize, out: &mut String) -> Option<usi
     }
     let rest = &input[idx..];
     for key in ["authorization", "x-api-key", "api-key", "api_key"] {
-        if rest.len() > key.len() && rest[..key.len()].eq_ignore_ascii_case(key) {
+        if rest.len() > key.len()
+            && rest
+                .as_bytes()
+                .get(..key.len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(key.as_bytes()))
+        {
             let bytes = input.as_bytes();
             let mut sep = idx + key.len();
             while sep < bytes.len() && bytes[sep] == b' ' {
@@ -176,5 +186,18 @@ mod tests {
     fn preserves_normal_text() {
         let plain = "session started for task: implement store migration";
         assert_eq!(redact_secrets(plain), plain);
+    }
+
+    #[test]
+    fn handles_multibyte_utf8_without_panicking() {
+        for sample in [
+            "/ࠀ𐀀",
+            "🚀api_key=sekret_123",
+            "🔥bearer tok_99999",
+            "日本語/path",
+        ] {
+            let out = redact_secrets(sample);
+            assert!(!out.is_empty());
+        }
     }
 }

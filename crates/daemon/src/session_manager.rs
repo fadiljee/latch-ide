@@ -32,6 +32,12 @@ use latch_core::protocol::{
 };
 use latch_core::sandbox::SandboxProvider;
 use latch_dag::{execute_workflow, parse_and_validate_workflow, DagError, DagRuntimeState};
+#[cfg(feature = "ide")]
+use latch_fs_service::{
+    apply_op, list_tree, read_file, read_raw, stat_path, write_file, FsOpRequest, FsOpResponse,
+    FsRawFile, FsReadResponse, FsServiceError, FsStatResponse, FsTreeResponse, FsWriteRequest,
+    FsWriteResponse,
+};
 use latch_git_engine::{
     create_worktree, inspect_repo, list_worktrees, merge_check, merge_session, remove_worktree,
     worktree_diff, GitError,
@@ -74,6 +80,10 @@ pub enum ManagerError {
     /// Galat parser/eksekutor pipeline DAG.
     #[error(transparent)]
     Dag(#[from] DagError),
+    /// Galat layanan berkas aman Agent IDE (`fs-service`).
+    #[cfg(feature = "ide")]
+    #[error(transparent)]
+    Fs(#[from] FsServiceError),
     /// Galat validasi konfigurasi/profil.
     #[error("configuration error: {0}")]
     Config(String),
@@ -111,6 +121,12 @@ pub enum DaemonEvent {
     PipelineUpdated {
         pipeline_id: String,
         status: PipelineStatus,
+    },
+    /// Perubahan berkas pada worktree sesi (`IT-201`, `IT-203`).
+    FsChanged {
+        session_id: String,
+        paths: Vec<String>,
+        by: String,
     },
 }
 
@@ -2533,6 +2549,190 @@ impl SessionManager {
         }
         let _ = self.store.touch_token_last_used(&token.id, now).await;
         Ok(Some(token))
+    }
+
+    // =========================================================================
+    // Layanan Berkas Worktree Aman (`IT-201`, `IT-202`, `IDE_API.md` §3)
+    // =========================================================================
+
+    /// Mengembalikan pohon direktori worktree sesi beserta flag status Git.
+    #[cfg(feature = "ide")]
+    pub async fn fs_tree(
+        &self,
+        session_id: &str,
+        rel_path: String,
+        depth: usize,
+        limit: usize,
+    ) -> Result<FsTreeResponse, ManagerError> {
+        let ses = self.store.get_session(session_id).await?;
+        let root = PathBuf::from(&ses.worktree_path);
+        let mut tree =
+            tokio::task::spawn_blocking(move || list_tree(&root, &rel_path, depth, limit))
+                .await
+                .map_err(|e| ManagerError::Config(format!("fs_tree task failed: {e}")))??;
+
+        // Perkaya flag status Git dari diff sesi jika tersedia (best-effort).
+        if let Ok(proj) = self.store.get_project(&ses.project_id).await {
+            if let Ok(diff) = worktree_diff(
+                Path::new(&ses.worktree_path),
+                &proj.default_branch,
+                None,
+                64 * 1024,
+            )
+            .await
+            {
+                let mut status_map: HashMap<String, String> = HashMap::new();
+                for f in diff.files {
+                    let code = match f.status {
+                        latch_core::model::DiffFileStatus::Added => "A",
+                        latch_core::model::DiffFileStatus::Modified => "M",
+                        latch_core::model::DiffFileStatus::Deleted => "D",
+                        latch_core::model::DiffFileStatus::Renamed => "R",
+                    };
+                    status_map.insert(f.path, code.to_string());
+                }
+                annotate_tree_git_status(&mut tree.entries, &status_map);
+            }
+        }
+        Ok(tree)
+    }
+
+    /// Mengembalikan metadata ringan satu berkas/direktori di worktree sesi.
+    #[cfg(feature = "ide")]
+    pub async fn fs_stat(
+        &self,
+        session_id: &str,
+        rel_path: String,
+    ) -> Result<FsStatResponse, ManagerError> {
+        let ses = self.store.get_session(session_id).await?;
+        let root = PathBuf::from(&ses.worktree_path);
+        let stat = tokio::task::spawn_blocking(move || stat_path(&root, &rel_path))
+            .await
+            .map_err(|e| ManagerError::Config(format!("fs_stat task failed: {e}")))??;
+        Ok(stat)
+    }
+
+    /// Membaca berkas teks di dalam worktree sesi beserta ETag SHA-256.
+    #[cfg(feature = "ide")]
+    pub async fn fs_read(
+        &self,
+        session_id: &str,
+        rel_path: String,
+    ) -> Result<FsReadResponse, ManagerError> {
+        let ses = self.store.get_session(session_id).await?;
+        let root = PathBuf::from(&ses.worktree_path);
+        let res = tokio::task::spawn_blocking(move || read_file(&root, &rel_path))
+            .await
+            .map_err(|e| ManagerError::Config(format!("fs_read task failed: {e}")))??;
+        Ok(res)
+    }
+
+    /// Membaca byte mentah berkas untuk unduhan/pratinjau gambar aman.
+    #[cfg(feature = "ide")]
+    pub async fn fs_raw(
+        &self,
+        session_id: &str,
+        rel_path: String,
+    ) -> Result<FsRawFile, ManagerError> {
+        let ses = self.store.get_session(session_id).await?;
+        let root = PathBuf::from(&ses.worktree_path);
+        let raw = tokio::task::spawn_blocking(move || read_raw(&root, &rel_path))
+            .await
+            .map_err(|e| ManagerError::Config(format!("fs_raw task failed: {e}")))??;
+        Ok(raw)
+    }
+
+    /// Menulis berkas ke worktree sesi dengan pemeriksaan ETag, cadangan undo `0600`, dan audit tanpa isi (`IT-202`).
+    #[cfg(feature = "ide")]
+    pub async fn fs_write(
+        &self,
+        session_id: &str,
+        rel_path: String,
+        req: FsWriteRequest,
+        if_match: Option<String>,
+    ) -> Result<FsWriteResponse, ManagerError> {
+        let ses = self.store.get_session(session_id).await?;
+        let root = PathBuf::from(&ses.worktree_path);
+        let undo_dir = self.paths.undo_dir();
+        let res = tokio::task::spawn_blocking(move || {
+            write_file(&root, &undo_dir, &rel_path, &req, if_match.as_deref())
+        })
+        .await
+        .map_err(|e| ManagerError::Config(format!("fs_write task failed: {e}")))??;
+
+        // Audit wajib mencatat jalur dan ukuran saja; DILARANG mencatat isi berkas (IDE_API.md §11).
+        let _ = self
+            .store
+            .insert_audit(AuditEntry {
+                id: None,
+                session_id: Some(ses.id.clone()),
+                kind: "fs_write".to_string(),
+                detail: format!("op=write path={} bytes={}", res.path, res.size),
+                timestamp: now_ms(),
+            })
+            .await;
+
+        let _ = self.events_tx.send(DaemonEvent::FsChanged {
+            session_id: ses.id,
+            paths: vec![res.path.clone()],
+            by: "user".to_string(),
+        });
+        Ok(res)
+    }
+
+    /// Menjalankan operasi struktural (`create`, `mkdir`, `rename`, `delete`) di worktree sesi dengan audit.
+    #[cfg(feature = "ide")]
+    pub async fn fs_op(
+        &self,
+        session_id: &str,
+        req: FsOpRequest,
+    ) -> Result<FsOpResponse, ManagerError> {
+        let ses = self.store.get_session(session_id).await?;
+        let root = PathBuf::from(&ses.worktree_path);
+        let undo_dir = self.paths.undo_dir();
+        let res = tokio::task::spawn_blocking(move || apply_op(&root, &undo_dir, &req))
+            .await
+            .map_err(|e| ManagerError::Config(format!("fs_op task failed: {e}")))??;
+
+        let mut changed_paths = vec![res.path.clone()];
+        let detail = if let Some(ref to) = res.to {
+            changed_paths.push(to.clone());
+            format!("op={:?} path={} to={}", res.op, res.path, to)
+        } else {
+            format!("op={:?} path={}", res.op, res.path)
+        };
+        let _ = self
+            .store
+            .insert_audit(AuditEntry {
+                id: None,
+                session_id: Some(ses.id.clone()),
+                kind: "fs_write".to_string(),
+                detail,
+                timestamp: now_ms(),
+            })
+            .await;
+
+        let _ = self.events_tx.send(DaemonEvent::FsChanged {
+            session_id: ses.id,
+            paths: changed_paths,
+            by: "user".to_string(),
+        });
+        Ok(res)
+    }
+}
+
+#[cfg(feature = "ide")]
+fn annotate_tree_git_status(
+    entries: &mut [latch_fs_service::FsTreeEntry],
+    status_map: &HashMap<String, String>,
+) {
+    for entry in entries {
+        if let Some(code) = status_map.get(&entry.path) {
+            entry.git_status = Some(code.clone());
+        }
+        if !entry.children.is_empty() {
+            annotate_tree_git_status(&mut entry.children, status_map);
+        }
     }
 }
 

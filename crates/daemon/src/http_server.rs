@@ -28,6 +28,8 @@ use latch_core::protocol::{
     SessionDiffParams, SessionListParams, SessionMergeParams, SessionRunParams, TokenCreateParams,
 };
 use latch_dag::DagRuntimeState;
+#[cfg(feature = "ide")]
+use latch_fs_service::{FsOpRequest, FsServiceError, FsWriteRequest};
 use latch_pty_pool::PtyFrame;
 use rand::RngCore;
 use rust_embed::RustEmbed;
@@ -201,6 +203,14 @@ pub async fn start_http_server(
             get(handle_session_telemetry),
         )
         .route("/api/v1/sessions/{id}/screen", get(handle_session_screen))
+        .route("/api/v1/sessions/{id}/fs/tree", get(handle_fs_tree))
+        .route(
+            "/api/v1/sessions/{id}/fs/file",
+            get(handle_fs_read).put(handle_fs_write),
+        )
+        .route("/api/v1/sessions/{id}/fs/ops", post(handle_fs_ops))
+        .route("/api/v1/sessions/{id}/fs/stat", get(handle_fs_stat))
+        .route("/api/v1/sessions/{id}/fs/raw", get(handle_fs_raw))
         .route(
             "/api/v1/approvals",
             get(handle_list_approvals).post(handle_create_approval),
@@ -442,6 +452,49 @@ fn manager_err_to_response(err: ManagerError) -> Response {
             "max_sessions_reached",
             err.to_string(),
         ),
+        #[cfg(feature = "ide")]
+        ManagerError::Fs(fs_err) => match fs_err {
+            FsServiceError::PathOutsideRoot(msg) => {
+                api_error(StatusCode::BAD_REQUEST, "path_outside_root", msg)
+            }
+            FsServiceError::GitDirProtected(msg) => {
+                api_error(StatusCode::FORBIDDEN, "git_dir_protected", msg)
+            }
+            FsServiceError::NotFound(msg) => api_error(StatusCode::NOT_FOUND, "not_found", msg),
+            FsServiceError::AlreadyExists(msg) => {
+                api_error(StatusCode::CONFLICT, "already_exists", msg)
+            }
+            FsServiceError::EtagMismatch {
+                current_etag,
+                current_content,
+            } => (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": {
+                        "code": "etag_mismatch",
+                        "message": "file changed on disk since last read",
+                        "details": {
+                            "current_etag": current_etag,
+                            "current_content": current_content
+                        }
+                    }
+                })),
+            )
+                .into_response(),
+            FsServiceError::PayloadTooLarge { limit, actual } => api_error(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "payload_too_large",
+                format!("payload size {actual} bytes exceeds limit of {limit} bytes"),
+            ),
+            FsServiceError::InvalidRequest(msg) => {
+                api_error(StatusCode::BAD_REQUEST, "invalid_request", msg)
+            }
+            FsServiceError::Io(io_err) => api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "fs_io",
+                io_err.to_string(),
+            ),
+        },
         _ => api_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal",
@@ -1039,6 +1092,206 @@ async fn handle_antigravity_cli_info(
     Json(state.manager.antigravity_cli_info().await).into_response()
 }
 
+#[derive(Deserialize)]
+struct FsTreeQuery {
+    #[serde(default)]
+    path: String,
+    depth: Option<usize>,
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct FsPathQuery {
+    path: String,
+}
+
+#[cfg(feature = "ide")]
+async fn handle_fs_tree(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Query(q): Query<FsTreeQuery>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Read).await {
+        return resp;
+    }
+    match state
+        .manager
+        .fs_tree(&id, q.path, q.depth.unwrap_or(1), q.limit.unwrap_or(200))
+        .await
+    {
+        Ok(tree) => Json(tree).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+#[cfg(not(feature = "ide"))]
+async fn handle_fs_tree() -> Response {
+    api_error(
+        StatusCode::NOT_IMPLEMENTED,
+        "not_implemented",
+        "IDE feature disabled",
+    )
+}
+
+#[cfg(feature = "ide")]
+async fn handle_fs_read(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Query(q): Query<FsPathQuery>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Read).await {
+        return resp;
+    }
+    match state.manager.fs_read(&id, q.path).await {
+        Ok(file) => Json(file).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+#[cfg(not(feature = "ide"))]
+async fn handle_fs_read() -> Response {
+    api_error(
+        StatusCode::NOT_IMPLEMENTED,
+        "not_implemented",
+        "IDE feature disabled",
+    )
+}
+
+#[cfg(feature = "ide")]
+async fn handle_fs_write(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Query(q): Query<FsPathQuery>,
+    Json(body): Json<FsWriteRequest>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Write).await {
+        return resp;
+    }
+    let if_match = headers
+        .get(header::IF_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    match state.manager.fs_write(&id, q.path, body, if_match).await {
+        Ok(res) => Json(res).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+#[cfg(not(feature = "ide"))]
+async fn handle_fs_write() -> Response {
+    api_error(
+        StatusCode::NOT_IMPLEMENTED,
+        "not_implemented",
+        "IDE feature disabled",
+    )
+}
+
+#[cfg(feature = "ide")]
+async fn handle_fs_ops(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<FsOpRequest>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Write).await {
+        return resp;
+    }
+    match state.manager.fs_op(&id, body).await {
+        Ok(res) => Json(res).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+#[cfg(not(feature = "ide"))]
+async fn handle_fs_ops() -> Response {
+    api_error(
+        StatusCode::NOT_IMPLEMENTED,
+        "not_implemented",
+        "IDE feature disabled",
+    )
+}
+
+#[cfg(feature = "ide")]
+async fn handle_fs_stat(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Query(q): Query<FsPathQuery>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Read).await {
+        return resp;
+    }
+    match state.manager.fs_stat(&id, q.path).await {
+        Ok(stat) => Json(stat).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+#[cfg(not(feature = "ide"))]
+async fn handle_fs_stat() -> Response {
+    api_error(
+        StatusCode::NOT_IMPLEMENTED,
+        "not_implemented",
+        "IDE feature disabled",
+    )
+}
+
+#[cfg(feature = "ide")]
+async fn handle_fs_raw(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Query(q): Query<FsPathQuery>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Read).await {
+        return resp;
+    }
+    match state.manager.fs_raw(&id, q.path).await {
+        Ok(raw) => {
+            let disposition = if raw.safe_inline {
+                format!("inline; filename=\"{}\"", raw.file_name)
+            } else {
+                format!("attachment; filename=\"{}\"", raw.file_name)
+            };
+            let mut resp = Response::new(Body::from(raw.bytes));
+            let hdrs = resp.headers_mut();
+            if let Ok(ct) = HeaderValue::from_str(raw.content_type) {
+                hdrs.insert(header::CONTENT_TYPE, ct);
+            }
+            if let Ok(disp) = HeaderValue::from_str(&disposition) {
+                hdrs.insert(header::CONTENT_DISPOSITION, disp);
+            }
+            if let Ok(etag) = HeaderValue::from_str(&format!("\"{}\"", raw.etag)) {
+                hdrs.insert(header::ETAG, etag);
+            }
+            hdrs.insert(
+                header::X_CONTENT_TYPE_OPTIONS,
+                HeaderValue::from_static("nosniff"),
+            );
+            resp
+        }
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+#[cfg(not(feature = "ide"))]
+async fn handle_fs_raw() -> Response {
+    api_error(
+        StatusCode::NOT_IMPLEMENTED,
+        "not_implemented",
+        "IDE feature disabled",
+    )
+}
+
 async fn handle_upsert_agent(
     State(state): State<HttpState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -1602,6 +1855,23 @@ async fn handle_events_ws(
                                 "type": "pipeline.status",
                                 "pipeline_id": pipeline_id,
                                 "status": status.as_str()
+                            });
+                            if socket.send(Message::Text(msg.to_string().into())).await.is_err() {
+                                break;
+                            }
+                        }
+                        Ok(DaemonEvent::FsChanged {
+                            session_id,
+                            paths,
+                            by,
+                        }) => {
+                            let seq = state.event_seq.fetch_add(1, Ordering::Relaxed);
+                            let msg = json!({
+                                "seq": seq,
+                                "type": "fs.changed",
+                                "session_id": session_id,
+                                "paths": paths,
+                                "by": by
                             });
                             if socket.send(Message::Text(msg.to_string().into())).await.is_err() {
                                 break;

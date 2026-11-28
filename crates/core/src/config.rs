@@ -155,6 +155,11 @@ impl RuntimePaths {
         self.state_dir.join("tmp")
     }
 
+    /// Mengembalikan direktori cadangan undo satu-langkah (`0600`) untuk penulisan berkas IDE (`IDE_SECURITY.md` §4).
+    pub fn undo_dir(&self) -> PathBuf {
+        self.state_dir.join("undo")
+    }
+
     /// Mengembangkan awalan `~/` jika ada di string konfigurasi.
     pub fn expand_tilde(raw: &str) -> PathBuf {
         if let Some(rest) = raw.strip_prefix("~/") {

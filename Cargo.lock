@@ -1146,7 +1146,12 @@ dependencies = [
 name = "latch-fs-service"
 version = "1.2.0"
 dependencies = [
+ "base64 0.22.1",
  "latch-core",
+ "proptest",
+ "serde",
+ "sha2 0.10.9",
+ "tempfile",
  "thiserror 2.0.21",
 ]
 

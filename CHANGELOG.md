@@ -5,6 +5,9 @@ Format mengikuti [Keep a Changelog](https://keepachangelog.com/id-ID/1.1.0/) dan
 ## [Unreleased]
 
 ### Added
+- **Layanan Berkas Aman Worktree, Proteksi `.git/`, & Suite Keamanan (`IT-201`, `IT-202`, `IT-213`, `IDE_API.md` §3, `IDE_SECURITY.md` §7):**
+  - `latch-fs-service`: implementasi penuh `list_tree`, `stat_path`, `read_file`, `read_raw`, `write_file`, dan `apply_op` (`create`/`mkdir`/`rename`/`delete`) dengan `#![forbid(unsafe_code)]`, resolusi kanonis di dalam akar worktree (menolak `..`, jalur absolut, dan symlink escape → `400 path_outside_root`), larangan akses/tulis `.git/` case-insensitive (`403 git_dir_protected`), kontrol konkurensi ETag SHA-256 (`409 etag_mismatch` + isi terbaru untuk resolusi 3-arah), deteksi file sensitif/biner/besar, dan cadangan undo satu-langkah (`state_dir/undo/`, izin `0600`).
+  - `latch-daemon`: rute REST `/api/v1/sessions/{id}/fs/{tree,file,ops,stat,raw}` dengan penegakan scope `read`/`write`, `X-Content-Type-Options: nosniff` + `Content-Disposition`, audit `fs_write` (hanya jalur & ukuran, tanpa isi berkas), event WebSocket `fs.changed`, `proptest` fuzz jalur, dan tes keamanan integrasi `crates/daemon/tests/fs_service_security.rs`.
 - **E2E Milestone I1 & Gerbang Bundel Initial vs Total (`IT-117`, DoD I1):**
   - `web/scripts/check-bundle-size.mjs`: memisahkan perhitungan anggaran bundel **initial load** (referensi `index.html`, batas `600 KiB` gzip) dan **total seluruh chunk lazy** (batas `3 MiB` gzip) sesuai `IDE_NFR_BUDGET.md`.
   - `web/src/app/I1Flow.test.tsx`: tes alur E2E Milestone I1 (Papan Mission Control → Diff anti-XSS `IT3` → Inbox Persetujuan → Grid Terminal 2×2).

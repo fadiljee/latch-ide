@@ -9,5 +9,12 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+base64 = { workspace = true }
 latch-core = { workspace = true }
+serde = { workspace = true }
+sha2 = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tempfile = { workspace = true }
