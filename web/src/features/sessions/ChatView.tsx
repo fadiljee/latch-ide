@@ -115,6 +115,7 @@ export function ChatView({ token, session, labels, onAction }: ChatViewProps) {
       <Composer
         token={token}
         sessionId={session.id}
+        agentProfile={session.agent_profile}
         labels={labels}
         disabled={session.status !== "running" && session.status !== "waiting_approval"}
       />

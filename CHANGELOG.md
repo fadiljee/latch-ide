@@ -5,6 +5,8 @@ Format mengikuti [Keep a Changelog](https://keepachangelog.com/id-ID/1.1.0/) dan
 ## [Unreleased]
 
 ### Added
+- **Pengiriman Pesan PTY Bracketed Paste & Templat Profil (`IT-113`, `FR-I20`):**
+  - `web/`: `Composer` mendukung input multi-baris, pembungkus *bracketed paste* (`ESC[200~...ESC[201~`) dengan sanitasi anti-breakout, templat cepat per profil agen (`claude`, `codex`, `antigravity`, `aider`, `shell`, dll.), serta pratinjau payload aman sebelum dikirim, lengkap dengan unit test Vitest.
 - **Peluncur Aman `latch ide` (`IT-103`, `FR-I102`):**
   - `latch-cli`: menambahkan subcommand `latch ide [--path <repo>] [--no-browser] [--print-token]` (lintas OS Linux/macOS/Windows) yang otomatis menyalakan daemon, mendaftarkan repositori Git, dan meneruskan token lewat URL fragment (`/#token=...`) tanpa mencetak token mentah ke log/stdout secara bawaan.
   - `web/`: `extractTokenFromHash` di `web/src/state/hosts.ts` langsung memindahkan token dari URL fragment ke memori sesi dan menghapusnya dari `window.history` agar tidak tersisa di riwayat browser, lengkap dengan unit test Vitest.
