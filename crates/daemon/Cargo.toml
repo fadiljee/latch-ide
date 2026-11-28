@@ -13,6 +13,7 @@ default = ["ide"]
 ide = [
   "dep:latch-agent-proto",
   "dep:latch-fs-service",
+  "dep:latch-lsp-host",
   "dep:latch-search",
   "dep:latch-workbench-api",
 ]

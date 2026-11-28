@@ -1062,6 +1062,8 @@ name = "latch-agent-proto"
 version = "1.2.0"
 dependencies = [
  "latch-core",
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 
@@ -1174,7 +1176,10 @@ dependencies = [
  "latch-core",
  "latch-pty-pool",
  "latch-sandbox",
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
+ "toml",
 ]
 
 [[package]]

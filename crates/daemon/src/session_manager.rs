@@ -6,6 +6,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(feature = "ide")]
+use latch_agent_proto::{
+    format_message_with_attachments, ActivityEvent, ActivityKind, AgentProtoError,
+    ContextAttachment, QueuedMessage, SessionMessageQueue,
+};
 use latch_core::config::{
     load_custom_commands, parse_agy_models_output, resolve_command_in_path, save_agents_config,
     save_custom_commands_file, AgentAuthMode, AgentProfile, AgentProfileStatus, AgentsConfig,
@@ -49,6 +54,11 @@ use latch_git_engine::ide::{
 use latch_git_engine::{
     create_worktree, inspect_repo, list_worktrees, merge_check, merge_session, remove_worktree,
     worktree_diff, GitError,
+};
+#[cfg(feature = "ide")]
+use latch_lsp_host::{
+    list_lsp_server_statuses, load_lsp_registry, prepare_sandboxed_lsp_command, LspHostError,
+    LspServerConfig, LspServerStatus,
 };
 use latch_proxy::{
     proxy_env_vars, start_proxy_server, BypassLoopDetector, ProxyError, ProxyRegistry,
@@ -101,6 +111,19 @@ pub enum ManagerError {
     #[cfg(feature = "ide")]
     #[error(transparent)]
     Search(#[from] SearchError),
+    /// Galat adaptor protokol agen (`latch-agent-proto`).
+    #[cfg(feature = "ide")]
+    #[error(transparent)]
+    AgentProto(#[from] AgentProtoError),
+    /// Galat subsistem LSP host (`latch-lsp-host`).
+    #[cfg(feature = "ide")]
+    #[error(transparent)]
+    Lsp(#[from] LspHostError),
+    /// Shell host tanpa sandbox tidak diaktifkan pada konfigurasi daemon (`IT7`).
+    #[error(
+        "host shell is disabled by default; enable [ide].allow_host_shell = true in config.toml"
+    )]
+    HostShellDisabled,
     /// Galat validasi konfigurasi/profil.
     #[error("configuration error: {0}")]
     Config(String),
@@ -161,6 +184,24 @@ pub enum DaemonEvent {
         session_id: String,
         comment: ReviewComment,
     },
+    /// Aktivitas terstruktur atau pemanggilan alat agen (`IT-404`, `IT-406`).
+    #[cfg(feature = "ide")]
+    AgentActivity { event: ActivityEvent },
+}
+
+/// Informasi satu terminal tambahan (sandboxed shell atau host shell terkunci) (`IT-306`, `IT-506`).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AuxTerminalInfo {
+    /// ID unik terminal tambahan.
+    pub terminal_id: String,
+    /// ID sesi worktree induk.
+    pub session_id: String,
+    /// Jenis terminal (`"sandbox"` atau `"host"`).
+    pub kind: String,
+    /// Direktori kerja terminal.
+    pub workdir: String,
+    /// Waktu pembuatan (UTC epoch ms).
+    pub created_at: i64,
 }
 
 /// Satu komentar inline review untuk dikirim ke agen (`IT-304`, `IDE_API.md` §6).
@@ -204,6 +245,11 @@ pub struct SessionManager {
     #[cfg(feature = "ide")]
     active_searches: Arc<AsyncMutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>>,
     review_comments: Arc<AsyncMutex<HashMap<String, Vec<ReviewComment>>>>,
+    aux_terminals: Arc<AsyncMutex<HashMap<String, AuxTerminalInfo>>>,
+    #[cfg(feature = "ide")]
+    activity_logs: Arc<AsyncMutex<HashMap<String, Vec<ActivityEvent>>>>,
+    #[cfg(feature = "ide")]
+    message_queues: Arc<AsyncMutex<HashMap<String, SessionMessageQueue>>>,
     exit_tx: mpsc::Sender<PtyExitEvent>,
     trip_tx: mpsc::Sender<TripEvent>,
     events_tx: broadcast::Sender<DaemonEvent>,
@@ -281,6 +327,11 @@ impl SessionManager {
             #[cfg(feature = "ide")]
             active_searches: Arc::new(AsyncMutex::new(HashMap::new())),
             review_comments: Arc::new(AsyncMutex::new(HashMap::new())),
+            aux_terminals: Arc::new(AsyncMutex::new(HashMap::new())),
+            #[cfg(feature = "ide")]
+            activity_logs: Arc::new(AsyncMutex::new(HashMap::new())),
+            #[cfg(feature = "ide")]
+            message_queues: Arc::new(AsyncMutex::new(HashMap::new())),
             exit_tx,
             trip_tx,
             events_tx,
@@ -3358,6 +3409,368 @@ impl SessionManager {
         let handle = self.pty_pool.get(&ses.id).await?;
         handle.write_input(payload.as_bytes())?;
         Ok(count)
+    }
+
+    // =========================================================================
+    // Terminal Tambahan (Sandbox / Host Terkunci), Pesan Terstruktur, Aktivitas,
+    // Antrean, Fan-Out Cepat, LSP & Validasi Workflow
+    // (`IT-303`, `IT-306`, `IT-403`..`IT-407`, `IT-501`..`IT-503`, `IT-506`, `IT-510`)
+    // =========================================================================
+
+    /// Membuka terminal tambahan (`sandbox` atau `host` terkunci) pada worktree sesi (`IT-306`, `IT-506`).
+    pub async fn create_aux_terminal(
+        &self,
+        session_id: &str,
+        kind: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<AuxTerminalInfo, ManagerError> {
+        let ses = self.store.get_session(session_id).await?;
+        let normalized_kind = match kind.trim() {
+            "sandbox" => "sandbox",
+            "host" => {
+                if !self.config.ide.allow_host_shell {
+                    let _ = self
+                        .store
+                        .insert_audit(AuditEntry {
+                            id: None,
+                            session_id: Some(ses.id.clone()),
+                            kind: "host_shell_denied".to_string(),
+                            detail:
+                                "attempted to open host shell while [ide].allow_host_shell=false"
+                                    .to_string(),
+                            timestamp: now_ms(),
+                        })
+                        .await;
+                    return Err(ManagerError::HostShellDisabled);
+                }
+                "host"
+            }
+            other => {
+                return Err(ManagerError::Config(format!(
+                    "terminal kind must be 'sandbox' or 'host' (got '{other}')"
+                )));
+            }
+        };
+
+        let terminal_id = format!("term-{}", new_id());
+        let workdir = PathBuf::from(&ses.worktree_path);
+        let isolated_tmp = self.paths.tmp_dir().join(&terminal_id);
+        let log_path = self.paths.logs_dir().join(format!("pty-{terminal_id}.log"));
+        let shell_bin = std::env::var("SHELL")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "sh".to_string());
+        let profile = AgentProfile {
+            display_name: Some(format!("Aux {normalized_kind} shell")),
+            command: shell_bin,
+            auth_mode: AgentAuthMode::None,
+            proxy_mode: ProxyMode::Bypass,
+            category: "shell".to_string(),
+            ..AgentProfile::default()
+        };
+        let sandbox_policy =
+            build_session_policy(&workdir, &isolated_tmp, &self.config.sandbox, &profile);
+        let noop = latch_sandbox::NoopProvider;
+        let provider: &dyn SandboxProvider = if normalized_kind == "sandbox" {
+            self.sandbox.as_ref()
+        } else {
+            &noop
+        };
+
+        self.pty_pool
+            .spawn(
+                PtySpawnRequest {
+                    session_id: terminal_id.clone(),
+                    workdir: workdir.clone(),
+                    isolated_tmp,
+                    log_path,
+                    profile,
+                    extra_env: Vec::new(),
+                    task: String::new(),
+                    sandbox_policy,
+                    ring_buffer_bytes: self.config.limits.pty_ring_buffer_kib * 1024,
+                    log_max_bytes: (self.config.limits.pty_log_max_mib as u64) * 1024 * 1024,
+                    batch_ms: self.config.limits.pty_batch_ms,
+                    scrollback_lines: self.config.limits.pty_scrollback_lines,
+                    size: (cols.clamp(40, 300), rows.clamp(10, 120)),
+                },
+                provider,
+                self.exit_tx.clone(),
+            )
+            .await?;
+
+        let info = AuxTerminalInfo {
+            terminal_id: terminal_id.clone(),
+            session_id: ses.id.clone(),
+            kind: normalized_kind.to_string(),
+            workdir: ses.worktree_path,
+            created_at: now_ms(),
+        };
+        self.aux_terminals
+            .lock()
+            .await
+            .insert(terminal_id.clone(), info.clone());
+
+        let _ = self
+            .store
+            .insert_audit(AuditEntry {
+                id: None,
+                session_id: Some(ses.id),
+                kind: "terminal_opened".to_string(),
+                detail: format!("terminal_id={terminal_id} kind={normalized_kind}"),
+                timestamp: now_ms(),
+            })
+            .await;
+
+        Ok(info)
+    }
+
+    /// Memeriksa metadata terminal tambahan (`kind` menentukan scope WS `shell-sandbox` vs `shell-host`).
+    pub async fn get_aux_terminal(&self, terminal_id: &str) -> Option<AuxTerminalInfo> {
+        self.aux_terminals.lock().await.get(terminal_id).cloned()
+    }
+
+    /// Membuka aliran PTY untuk terminal tambahan.
+    pub async fn attach_aux_terminal(
+        &self,
+        terminal_id: &str,
+    ) -> Result<(latch_pty_pool::session::PtySessionHandle, PtySubscriber), ManagerError> {
+        let handle = self.pty_pool.get(terminal_id).await?;
+        let sub = handle.subscribe();
+        Ok((handle, sub))
+    }
+
+    /// Menutup dan membersihkan terminal tambahan (`DELETE /api/v1/terminals/{tid}`).
+    pub async fn close_aux_terminal(&self, terminal_id: &str) -> Result<(), ManagerError> {
+        let info = self.aux_terminals.lock().await.remove(terminal_id);
+        if let Ok(handle) = self.pty_pool.get(terminal_id).await {
+            let _ = handle.kill().await;
+        } else if info.is_none() {
+            return Err(ManagerError::Store(StoreError::NotFound {
+                entity: "terminal",
+                key: terminal_id.to_string(),
+            }));
+        }
+        Ok(())
+    }
+
+    /// Mengirim pesan terstruktur ke agen dengan lampiran `@file` aman & opsi antrean (`IT-303`, `IT-407`).
+    #[cfg(feature = "ide")]
+    pub async fn send_structured_message(
+        &self,
+        session_id: &str,
+        text: String,
+        attachment_paths: Vec<String>,
+        queue_only: bool,
+    ) -> Result<serde_json::Value, ManagerError> {
+        let ses = self.store.get_session(session_id).await?;
+        let mut attachments = Vec::new();
+        for rel in attachment_paths.into_iter().take(10) {
+            let file = self.fs_read(&ses.id, rel).await?;
+            if let Some(content) = file.content {
+                attachments.push(ContextAttachment {
+                    path: file.path,
+                    content,
+                });
+            }
+        }
+        let formatted = format_message_with_attachments(&text, &attachments)?;
+
+        if queue_only {
+            let queued = self
+                .message_queues
+                .lock()
+                .await
+                .entry(ses.id.clone())
+                .or_default()
+                .push(formatted)?;
+            return Ok(serde_json::json!({ "status": "queued", "item": queued }));
+        }
+
+        let safe = formatted.replace("\x1b[201~", "");
+        let payload = format!("\x1b[200~{safe}\x1b[201~\r");
+        let handle = self.pty_pool.get(&ses.id).await?;
+        handle.write_input(payload.as_bytes())?;
+
+        let summary: String = text.trim().chars().take(180).collect();
+        self.push_activity_event(ActivityEvent {
+            id: new_id(),
+            session_id: ses.id,
+            kind: ActivityKind::UserMessage,
+            source: "user".to_string(),
+            summary,
+            ok: Some(true),
+            timestamp: now_ms(),
+        })
+        .await;
+
+        Ok(serde_json::json!({ "status": "sent" }))
+    }
+
+    /// Mengambil daftar aktivitas & antrean pesan untuk satu sesi (`GET /sessions/{sid}/activity`).
+    #[cfg(feature = "ide")]
+    pub async fn session_activity(
+        &self,
+        session_id: &str,
+        since: Option<i64>,
+    ) -> Result<(Vec<ActivityEvent>, Vec<QueuedMessage>), ManagerError> {
+        let ses = self.store.get_session(session_id).await?;
+        let events = self
+            .activity_logs
+            .lock()
+            .await
+            .get(&ses.id)
+            .map(|list| {
+                list.iter()
+                    .filter(|e| since.is_none_or(|ts| e.timestamp >= ts))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        let queue = self
+            .message_queues
+            .lock()
+            .await
+            .get(&ses.id)
+            .map(SessionMessageQueue::list)
+            .unwrap_or_default();
+        Ok((events, queue))
+    }
+
+    /// Mengirim item terdepan dari antrean pesan ke PTY sesi (`IT-407`).
+    #[cfg(feature = "ide")]
+    pub async fn flush_next_queued_message(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<QueuedMessage>, ManagerError> {
+        let ses = self.store.get_session(session_id).await?;
+        let next = self
+            .message_queues
+            .lock()
+            .await
+            .entry(ses.id.clone())
+            .or_default()
+            .pop_front();
+        if let Some(ref item) = next {
+            let safe = item.text.replace("\x1b[201~", "");
+            let payload = format!("\x1b[200~{safe}\x1b[201~\r");
+            let handle = self.pty_pool.get(&ses.id).await?;
+            handle.write_input(payload.as_bytes())?;
+        }
+        Ok(next)
+    }
+
+    /// Mengirim interupsi (`Ctrl+C`) ke proses PTY agen (`POST /sessions/{sid}/interrupt`).
+    pub async fn interrupt_session(&self, session_id: &str) -> Result<(), ManagerError> {
+        let ses = self.store.get_session(session_id).await?;
+        let handle = self.pty_pool.get(&ses.id).await?;
+        handle.write_input(&[0x03])?;
+        #[cfg(feature = "ide")]
+        self.push_activity_event(ActivityEvent {
+            id: new_id(),
+            session_id: ses.id,
+            kind: ActivityKind::Interrupted,
+            source: "user".to_string(),
+            summary: "Sent Ctrl+C interrupt signal".to_string(),
+            ok: Some(true),
+            timestamp: now_ms(),
+        })
+        .await;
+        Ok(())
+    }
+
+    /// Meluncurkan Fan-Out Arena cepat lintas beberapa profil agen dari panel agen (`IT-403`).
+    pub async fn launch_quick_fanout(
+        &self,
+        project: String,
+        task: String,
+        profiles: Vec<String>,
+        verify_command: Option<String>,
+    ) -> Result<PipelineRun, ManagerError> {
+        if profiles.len() < 2 || profiles.len() > 6 {
+            return Err(ManagerError::Config(
+                "fan-out requires between 2 and 6 agent profiles".to_string(),
+            ));
+        }
+        let quoted_profiles: Vec<String> = profiles
+            .iter()
+            .map(|p| format!("\"{}\"", p.replace('"', "")))
+            .collect();
+        let verify_line = verify_command
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|cmd| format!("verify_command = \"{}\"\n", cmd.replace('"', "\\\"")))
+            .unwrap_or_default();
+        let wf_toml = format!(
+            "[workflow]\nname = \"quick-fanout\"\nmax_budget_usd = 5.0\n\n[[steps]]\nid = \"arena\"\ntype = \"fanout\"\nprofiles = [{}]\nprompt = \"{{{{task}}}}\"\n{}select = \"manual\"\n",
+            quoted_profiles.join(", "),
+            verify_line
+        );
+        self.run_pipeline(PipelineRunParams {
+            project,
+            workflow_toml: Some(wf_toml),
+            workflow_path: None,
+            task,
+        })
+        .await
+    }
+
+    #[cfg(feature = "ide")]
+    async fn push_activity_event(&self, ev: ActivityEvent) {
+        let mut guard = self.activity_logs.lock().await;
+        let list = guard.entry(ev.session_id.clone()).or_default();
+        list.push(ev.clone());
+        if list.len() > 200 {
+            let excess = list.len() - 200;
+            list.drain(0..excess);
+        }
+        drop(guard);
+        let _ = self
+            .events_tx
+            .send(DaemonEvent::AgentActivity { event: ev });
+    }
+
+    /// Daftar server LSP terdaftar dari `~/.config/latch/lsp.toml` pengguna (`GET /api/v1/lsp/servers`).
+    #[cfg(feature = "ide")]
+    pub async fn list_lsp_servers(&self) -> Vec<LspServerStatus> {
+        let path = self.paths.lsp_file();
+        tokio::task::spawn_blocking(move || {
+            let reg = load_lsp_registry(&path);
+            list_lsp_server_statuses(&reg)
+        })
+        .await
+        .unwrap_or_default()
+    }
+
+    /// Mempersiapkan konfigurasi & command LSP tersandbox untuk satu sesi dan bahasa (`IT-501`, `IT-502`).
+    #[cfg(feature = "ide")]
+    pub async fn prepare_session_lsp(
+        &self,
+        session_id: &str,
+        language: &str,
+    ) -> Result<(LspServerConfig, std::process::Command), ManagerError> {
+        let ses = self.store.get_session(session_id).await?;
+        let reg = load_lsp_registry(&self.paths.lsp_file());
+        let cfg = reg
+            .servers
+            .get(language)
+            .cloned()
+            .ok_or_else(|| LspHostError::ServerUnavailable(language.to_string()))?;
+        let isolated_tmp = self
+            .paths
+            .tmp_dir()
+            .join(format!("lsp-{}-{}", ses.id, language));
+        let _ = tokio::fs::create_dir_all(&isolated_tmp).await;
+        let cmd = prepare_sandboxed_lsp_command(
+            &cfg,
+            Path::new(&ses.worktree_path),
+            &isolated_tmp,
+            &self.config.sandbox,
+            self.sandbox.as_ref(),
+        )?;
+        Ok((cfg, cmd))
     }
 }
 

@@ -148,6 +148,8 @@ pub fn spawn_notification_dispatcher(
                 | Ok(DaemonEvent::SearchResult { .. })
                 | Ok(DaemonEvent::PrefsChanged)
                 | Ok(DaemonEvent::ReviewCommentAdded { .. }) => {}
+                #[cfg(feature = "ide")]
+                Ok(DaemonEvent::AgentActivity { .. }) => {}
                 Err(broadcast::error::RecvError::Lagged(skipped)) => {
                     debug!(skipped, "notification dispatcher lagged");
                 }

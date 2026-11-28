@@ -27,9 +27,11 @@ use latch_core::protocol::{
     GcParams, PipelineArenaSelectParams, PipelineListParams, PipelineRunParams, ProjectAddParams,
     SessionDiffParams, SessionListParams, SessionMergeParams, SessionRunParams, TokenCreateParams,
 };
-use latch_dag::DagRuntimeState;
+use latch_dag::{parse_and_validate_workflow, DagRuntimeState};
 #[cfg(feature = "ide")]
 use latch_fs_service::{FsOpRequest, FsServiceError, FsWriteRequest};
+#[cfg(feature = "ide")]
+use latch_lsp_host::filter_lsp_client_message;
 use latch_pty_pool::PtyFrame;
 #[cfg(feature = "ide")]
 use latch_search::{SearchError, TextSearchRequest};
@@ -267,6 +269,34 @@ pub async fn start_http_server(
             "/api/v1/sessions/{id}/review/send",
             post(handle_send_review_comments),
         )
+        .route(
+            "/api/v1/sessions/{id}/messages",
+            post(handle_send_structured_message),
+        )
+        .route(
+            "/api/v1/sessions/{id}/messages/flush",
+            post(handle_flush_queued_message),
+        )
+        .route(
+            "/api/v1/sessions/{id}/activity",
+            get(handle_session_activity),
+        )
+        .route(
+            "/api/v1/sessions/{id}/interrupt",
+            post(handle_interrupt_session),
+        )
+        .route(
+            "/api/v1/sessions/{id}/terminals",
+            post(handle_create_aux_terminal),
+        )
+        .route(
+            "/api/v1/terminals/{tid}",
+            get(handle_aux_terminal_ws).delete(handle_delete_aux_terminal),
+        )
+        .route("/api/v1/fanout", post(handle_quick_fanout))
+        .route("/api/v1/workflows/validate", post(handle_validate_workflow))
+        .route("/api/v1/lsp/servers", get(handle_list_lsp_servers))
+        .route("/api/v1/sessions/{id}/lsp/{language}", get(handle_lsp_ws))
         .route(
             "/api/v1/approvals",
             get(handle_list_approvals).post(handle_create_approval),
@@ -562,6 +592,31 @@ fn manager_err_to_response(err: ManagerError) -> Response {
                 io_err.to_string(),
             ),
         },
+        #[cfg(feature = "ide")]
+        ManagerError::AgentProto(proto_err) => api_error(
+            StatusCode::BAD_REQUEST,
+            "agent_proto",
+            proto_err.to_string(),
+        ),
+        #[cfg(feature = "ide")]
+        ManagerError::Lsp(lsp_err) => match lsp_err {
+            latch_lsp_host::LspHostError::MethodBlocked(m) => api_error(
+                StatusCode::FORBIDDEN,
+                "lsp_method_blocked",
+                format!("LSP method '{m}' is blocked"),
+            ),
+            latch_lsp_host::LspHostError::ServerUnavailable(lang) => api_error(
+                StatusCode::NOT_FOUND,
+                "lsp_unavailable",
+                format!("LSP server unavailable for '{lang}'"),
+            ),
+            other => api_error(StatusCode::BAD_REQUEST, "lsp_error", other.to_string()),
+        },
+        ManagerError::HostShellDisabled => api_error(
+            StatusCode::FORBIDDEN,
+            "host_shell_disabled",
+            err.to_string(),
+        ),
         _ => api_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal",
@@ -1849,6 +1904,480 @@ async fn handle_send_review_comments(
     }
 }
 
+#[derive(Deserialize)]
+struct StructuredMessageBody {
+    text: String,
+    #[serde(default)]
+    attachments: Vec<String>,
+    #[serde(default)]
+    queue_only: bool,
+}
+
+#[cfg(feature = "ide")]
+async fn handle_send_structured_message(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<StructuredMessageBody>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Control).await {
+        return resp;
+    }
+    match state
+        .manager
+        .send_structured_message(&id, body.text, body.attachments, body.queue_only)
+        .await
+    {
+        Ok(res) => Json(res).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+#[cfg(not(feature = "ide"))]
+async fn handle_send_structured_message() -> Response {
+    api_error(
+        StatusCode::NOT_IMPLEMENTED,
+        "not_implemented",
+        "IDE feature disabled",
+    )
+}
+
+#[cfg(feature = "ide")]
+async fn handle_flush_queued_message(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Control).await {
+        return resp;
+    }
+    match state.manager.flush_next_queued_message(&id).await {
+        Ok(item) => Json(json!({ "flushed": item })).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+#[cfg(not(feature = "ide"))]
+async fn handle_flush_queued_message() -> Response {
+    api_error(
+        StatusCode::NOT_IMPLEMENTED,
+        "not_implemented",
+        "IDE feature disabled",
+    )
+}
+
+#[derive(Deserialize, Default)]
+struct ActivityQuery {
+    since: Option<i64>,
+}
+
+#[cfg(feature = "ide")]
+async fn handle_session_activity(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Query(q): Query<ActivityQuery>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Read).await {
+        return resp;
+    }
+    match state.manager.session_activity(&id, q.since).await {
+        Ok((events, queue)) => Json(json!({ "events": events, "queue": queue })).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+#[cfg(not(feature = "ide"))]
+async fn handle_session_activity() -> Response {
+    api_error(
+        StatusCode::NOT_IMPLEMENTED,
+        "not_implemented",
+        "IDE feature disabled",
+    )
+}
+
+async fn handle_interrupt_session(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Control).await {
+        return resp;
+    }
+    match state.manager.interrupt_session(&id).await {
+        Ok(()) => Json(json!({ "interrupted": true })).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+#[derive(Deserialize)]
+struct CreateTerminalBody {
+    #[serde(default = "default_terminal_kind")]
+    kind: String,
+    #[serde(default = "default_cols")]
+    cols: u16,
+    #[serde(default = "default_rows")]
+    rows: u16,
+}
+
+fn default_terminal_kind() -> String {
+    "sandbox".to_string()
+}
+const fn default_cols() -> u16 {
+    100
+}
+const fn default_rows() -> u16 {
+    28
+}
+
+async fn handle_create_aux_terminal(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<CreateTerminalBody>,
+) -> Response {
+    let required = if body.kind.trim() == "host" {
+        TokenScope::ShellHost
+    } else {
+        TokenScope::ShellSandbox
+    };
+    if let Err(resp) = authorize_http(&state, &headers, peer, required).await {
+        return resp;
+    }
+    match state
+        .manager
+        .create_aux_terminal(&id, &body.kind, body.cols, body.rows)
+        .await
+    {
+        Ok(info) => (StatusCode::CREATED, Json(info)).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+async fn handle_delete_aux_terminal(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(tid): AxumPath<String>,
+) -> Response {
+    let required = match state.manager.get_aux_terminal(&tid).await {
+        Some(info) if info.kind == "host" => TokenScope::ShellHost,
+        _ => TokenScope::ShellSandbox,
+    };
+    if let Err(resp) = authorize_http(&state, &headers, peer, required).await {
+        return resp;
+    }
+    match state.manager.close_aux_terminal(&tid).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+async fn handle_aux_terminal_ws(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(tid): AxumPath<String>,
+    ws: WebSocketUpgrade,
+) -> Response {
+    if let Err(resp) = check_origin(&headers) {
+        return resp;
+    }
+    let required = match state.manager.get_aux_terminal(&tid).await {
+        Some(info) if info.kind == "host" => TokenScope::ShellHost,
+        _ => TokenScope::ShellSandbox,
+    };
+    let pre_auth_scopes = match extract_ws_subprotocol_token(&headers) {
+        Some(tok) => resolve_token_scopes(&state, &tok).await,
+        None => None,
+    };
+    let mut upgrade = ws;
+    if pre_auth_scopes.is_some() {
+        upgrade = upgrade.protocols(["agentd.v1"]);
+    }
+    upgrade.on_upgrade(move |mut socket| async move {
+        if authenticate_ws_socket(&mut socket, &state, pre_auth_scopes, peer, required)
+            .await
+            .is_none()
+        {
+            let _ = socket.send(Message::Close(None)).await;
+            return;
+        }
+        let Ok((handle, mut sub)) = state.manager.attach_aux_terminal(&tid).await else {
+            let _ = socket.send(Message::Close(None)).await;
+            return;
+        };
+        if !sub.initial_bytes.is_empty()
+            && socket
+                .send(Message::Binary(sub.initial_bytes.into()))
+                .await
+                .is_err()
+        {
+            return;
+        }
+        loop {
+            tokio::select! {
+                frame = sub.rx.recv() => {
+                    match frame {
+                        Some(PtyFrame::Output(bytes)) => {
+                            if socket.send(Message::Binary(bytes.into())).await.is_err() {
+                                break;
+                            }
+                        }
+                        Some(PtyFrame::Dropped(_)) => {}
+                        None => break,
+                    }
+                }
+                incoming = socket.recv() => {
+                    match incoming {
+                        Some(Ok(Message::Text(text))) => {
+                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
+                                match val.get("type").and_then(|v| v.as_str()) {
+                                    Some("input") => {
+                                        if let Some(data) = val.get("data").and_then(|v| v.as_str()) {
+                                            let _ = handle.write_input(data.as_bytes());
+                                        }
+                                    }
+                                    Some("resize") => {
+                                        let cols = val.get("cols").and_then(|v| v.as_u64()).and_then(|n| u16::try_from(n).ok());
+                                        let rows = val.get("rows").and_then(|v| v.as_u64()).and_then(|n| u16::try_from(n).ok());
+                                        if let (Some(c), Some(r)) = (cols, rows) {
+                                            let _ = handle.resize(c, r);
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        Some(Ok(Message::Binary(bin))) => {
+                            let _ = handle.write_input(&bin);
+                        }
+                        Some(Ok(Message::Close(_))) | None => break,
+                        _ => {}
+                    }
+                }
+            }
+        }
+    })
+}
+
+#[derive(Deserialize)]
+struct QuickFanoutBody {
+    project: String,
+    task: String,
+    profiles: Vec<String>,
+    verify_command: Option<String>,
+}
+
+async fn handle_quick_fanout(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(body): Json<QuickFanoutBody>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Control).await {
+        return resp;
+    }
+    match state
+        .manager
+        .launch_quick_fanout(body.project, body.task, body.profiles, body.verify_command)
+        .await
+    {
+        Ok(run) => (StatusCode::CREATED, Json(run)).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+#[derive(Deserialize)]
+struct ValidateWorkflowBody {
+    workflow_toml: String,
+}
+
+async fn handle_validate_workflow(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(body): Json<ValidateWorkflowBody>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Read).await {
+        return resp;
+    }
+    match parse_and_validate_workflow(&body.workflow_toml) {
+        Ok((wf, order)) => Json(json!({
+            "valid": true,
+            "workflow_name": wf.workflow.name,
+            "order": order,
+            "steps": wf.steps.iter().map(|s| json!({
+                "id": s.id,
+                "kind": format!("{:?}", s.kind).to_ascii_lowercase(),
+                "depends_on": s.depends_on,
+                "profile": s.profile,
+                "profiles": s.profiles
+            })).collect::<Vec<_>>(),
+            "error": null
+        }))
+        .into_response(),
+        Err(err) => Json(json!({
+            "valid": false,
+            "workflow_name": null,
+            "steps": [],
+            "error": err.to_string()
+        }))
+        .into_response(),
+    }
+}
+
+#[cfg(feature = "ide")]
+async fn handle_list_lsp_servers(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Read).await {
+        return resp;
+    }
+    Json(state.manager.list_lsp_servers().await).into_response()
+}
+
+#[cfg(not(feature = "ide"))]
+async fn handle_list_lsp_servers() -> Response {
+    api_error(
+        StatusCode::NOT_IMPLEMENTED,
+        "not_implemented",
+        "IDE feature disabled",
+    )
+}
+
+#[cfg(feature = "ide")]
+async fn handle_lsp_ws(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath((id, language)): AxumPath<(String, String)>,
+    ws: WebSocketUpgrade,
+) -> Response {
+    if let Err(resp) = check_origin(&headers) {
+        return resp;
+    }
+    let pre_auth_scopes = match extract_ws_subprotocol_token(&headers) {
+        Some(tok) => resolve_token_scopes(&state, &tok).await,
+        None => None,
+    };
+    let mut upgrade = ws;
+    if pre_auth_scopes.is_some() {
+        upgrade = upgrade.protocols(["agentd.v1"]);
+    }
+    upgrade.on_upgrade(move |mut socket| async move {
+        if authenticate_ws_socket(&mut socket, &state, pre_auth_scopes, peer, TokenScope::Write)
+            .await
+            .is_none()
+        {
+            let _ = socket.send(Message::Close(None)).await;
+            return;
+        }
+        let Ok((cfg, std_cmd)) = state.manager.prepare_session_lsp(&id, &language).await else {
+            let err = json!({
+                "jsonrpc": "2.0",
+                "error": { "code": -32002, "message": format!("LSP server unavailable for '{language}'") }
+            });
+            let _ = socket.send(Message::Text(err.to_string().into())).await;
+            let _ = socket.send(Message::Close(None)).await;
+            return;
+        };
+
+        let mut tokio_cmd = tokio::process::Command::from(std_cmd);
+        tokio_cmd
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true);
+        let Ok(mut child) = tokio_cmd.spawn() else {
+            let _ = socket.send(Message::Close(None)).await;
+            return;
+        };
+        let (Some(mut child_in), Some(child_out)) = (child.stdin.take(), child.stdout.take()) else {
+            let _ = child.kill().await;
+            return;
+        };
+
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+        let mut reader = BufReader::new(child_out);
+        let idle = Duration::from_secs(cfg.idle_timeout_secs.max(60));
+
+        loop {
+            let mut header_line = String::new();
+            tokio::select! {
+                _ = tokio::time::sleep(idle) => break,
+                read_res = reader.read_line(&mut header_line) => {
+                    match read_res {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {
+                            let lower = header_line.to_ascii_lowercase();
+                            if let Some(len_str) = lower.strip_prefix("content-length:") {
+                                let len: usize = len_str.trim().parse().unwrap_or(0);
+                                if len == 0 || len > latch_lsp_host::MAX_LSP_MESSAGE_BYTES {
+                                    break;
+                                }
+                                // Baca header sampai baris kosong
+                                loop {
+                                    let mut sep = String::new();
+                                    if reader.read_line(&mut sep).await.unwrap_or(0) == 0 || sep.trim().is_empty() {
+                                        break;
+                                    }
+                                }
+                                let mut payload = vec![0u8; len];
+                                if reader.read_exact(&mut payload).await.is_err() {
+                                    break;
+                                }
+                                let text = String::from_utf8_lossy(&payload).into_owned();
+                                if socket.send(Message::Text(text.into())).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                incoming = socket.recv() => {
+                    match incoming {
+                        Some(Ok(Message::Text(text))) => {
+                            if let Err(err) = filter_lsp_client_message(&text, cfg.allow_execute_command) {
+                                let reply = json!({
+                                    "jsonrpc": "2.0",
+                                    "error": { "code": -32601, "message": err.to_string() }
+                                });
+                                let _ = socket.send(Message::Text(reply.to_string().into())).await;
+                                continue;
+                            }
+                            let frame = format!("Content-Length: {}\r\n\r\n{}", text.len(), text);
+                            if child_in.write_all(frame.as_bytes()).await.is_err() {
+                                break;
+                            }
+                            let _ = child_in.flush().await;
+                        }
+                        Some(Ok(Message::Close(_))) | None => break,
+                        _ => {}
+                    }
+                }
+            }
+        }
+        let _ = child.kill().await;
+    })
+}
+
+#[cfg(not(feature = "ide"))]
+async fn handle_lsp_ws() -> Response {
+    api_error(
+        StatusCode::NOT_IMPLEMENTED,
+        "not_implemented",
+        "IDE feature disabled",
+    )
+}
+
 async fn handle_upsert_agent(
     State(state): State<HttpState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -2477,6 +3006,19 @@ async fn handle_events_ws(
                                 "type": "review.comment_added",
                                 "session_id": session_id,
                                 "comment": comment
+                            });
+                            if socket.send(Message::Text(msg.to_string().into())).await.is_err() {
+                                break;
+                            }
+                        }
+                        #[cfg(feature = "ide")]
+                        Ok(DaemonEvent::AgentActivity { event }) => {
+                            let seq = state.event_seq.fetch_add(1, Ordering::Relaxed);
+                            let msg = json!({
+                                "seq": seq,
+                                "type": "session.activity",
+                                "session_id": event.session_id,
+                                "event": event
                             });
                             if socket.send(Message::Text(msg.to_string().into())).await.is_err() {
                                 break;

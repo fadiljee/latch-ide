@@ -12,4 +12,7 @@ workspace = true
 latch-core = { workspace = true }
 latch-pty-pool = { workspace = true }
 latch-sandbox = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
+toml = { workspace = true }
