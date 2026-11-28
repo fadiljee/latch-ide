@@ -5,6 +5,9 @@ Format mengikuti [Keep a Changelog](https://keepachangelog.com/id-ID/1.1.0/) dan
 ## [Unreleased]
 
 ### Added
+- **Pemantau Berkas Worktree & Deteksi Sentuhan Agen (`IT-203`, `IT-207`, `FR-I53`, `FR-I42`):**
+  - `latch-fs-service`: menambahkan modul `watcher::SessionWatchTracker` tanpa dependensi tambahan dengan batas memori 20.000 berkas per worktree (`NFR-I05`), mengabaikan `.git/`/`target/`/`node_modules/`, serta membedakan penulisan UI (`by: "user"`) dari modifikasi agen (`by: "agent"`).
+  - `latch-daemon`: menjalankan pemantau latar belakang yang memancarkan event WebSocket `fs.changed`, menandai `agent_touched` pada `GET /fs/tree`, dan mengekspos `GET /api/v1/sessions/{id}/fs/agent-touched`.
 - **Layanan Berkas Aman Worktree, Proteksi `.git/`, & Suite Keamanan (`IT-201`, `IT-202`, `IT-213`, `IDE_API.md` §3, `IDE_SECURITY.md` §7):**
   - `latch-fs-service`: implementasi penuh `list_tree`, `stat_path`, `read_file`, `read_raw`, `write_file`, dan `apply_op` (`create`/`mkdir`/`rename`/`delete`) dengan `#![forbid(unsafe_code)]`, resolusi kanonis di dalam akar worktree (menolak `..`, jalur absolut, dan symlink escape → `400 path_outside_root`), larangan akses/tulis `.git/` case-insensitive (`403 git_dir_protected`), kontrol konkurensi ETag SHA-256 (`409 etag_mismatch` + isi terbaru untuk resolusi 3-arah), deteksi file sensitif/biner/besar, dan cadangan undo satu-langkah (`state_dir/undo/`, izin `0600`).
   - `latch-daemon`: rute REST `/api/v1/sessions/{id}/fs/{tree,file,ops,stat,raw}` dengan penegakan scope `read`/`write`, `X-Content-Type-Options: nosniff` + `Content-Disposition`, audit `fs_write` (hanya jalur & ukuran, tanpa isi berkas), event WebSocket `fs.changed`, `proptest` fuzz jalur, dan tes keamanan integrasi `crates/daemon/tests/fs_service_security.rs`.

@@ -33,6 +33,8 @@ use latch_core::protocol::{
 use latch_core::sandbox::SandboxProvider;
 use latch_dag::{execute_workflow, parse_and_validate_workflow, DagError, DagRuntimeState};
 #[cfg(feature = "ide")]
+use latch_fs_service::watcher::SessionWatchTracker;
+#[cfg(feature = "ide")]
 use latch_fs_service::{
     apply_op, list_tree, read_file, read_raw, stat_path, write_file, FsOpRequest, FsOpResponse,
     FsRawFile, FsReadResponse, FsServiceError, FsStatResponse, FsTreeResponse, FsWriteRequest,
@@ -147,6 +149,8 @@ pub struct SessionManager {
     proxy_handle: Arc<ProxyServerHandle>,
     approval_waiters: Arc<AsyncMutex<HashMap<String, oneshot::Sender<ApprovalRequest>>>>,
     pipeline_tasks: Arc<AsyncMutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
+    #[cfg(feature = "ide")]
+    fs_watcher: Arc<AsyncMutex<SessionWatchTracker>>,
     exit_tx: mpsc::Sender<PtyExitEvent>,
     trip_tx: mpsc::Sender<TripEvent>,
     events_tx: broadcast::Sender<DaemonEvent>,
@@ -219,6 +223,8 @@ impl SessionManager {
             proxy_handle: Arc::new(proxy_handle),
             approval_waiters: Arc::new(AsyncMutex::new(HashMap::new())),
             pipeline_tasks: Arc::new(AsyncMutex::new(HashMap::new())),
+            #[cfg(feature = "ide")]
+            fs_watcher: Arc::new(AsyncMutex::new(SessionWatchTracker::default())),
             exit_tx,
             trip_tx,
             events_tx,
@@ -230,7 +236,70 @@ impl SessionManager {
         manager.spawn_telemetry_batch_writer(telemetry_rx);
         manager.spawn_trip_watcher(trip_rx);
         manager.spawn_idle_hibernate_watcher();
+        #[cfg(feature = "ide")]
+        manager.spawn_fs_watcher();
         Ok(manager)
+    }
+
+    #[cfg(feature = "ide")]
+    fn spawn_fs_watcher(&self) {
+        let manager = self.clone();
+        let shutdown = Arc::clone(&self.shutdown);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_millis(750));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    _ = shutdown.notified() => break,
+                    _ = interval.tick() => {
+                        let Ok(sessions) = manager.store.list_sessions(None, None).await else {
+                            continue;
+                        };
+                        let active: Vec<(String, PathBuf)> = sessions
+                            .into_iter()
+                            .filter(|s| {
+                                matches!(
+                                    s.status,
+                                    SessionStatus::Running | SessionStatus::WaitingApproval
+                                )
+                            })
+                            .map(|s| (s.id, PathBuf::from(s.worktree_path)))
+                            .collect();
+                        let active_ids: HashSet<String> =
+                            active.iter().map(|(id, _)| id.clone()).collect();
+                        if active.is_empty() {
+                            manager.fs_watcher.lock().await.retain_sessions(&active_ids);
+                            continue;
+                        }
+
+                        let watcher_arc = Arc::clone(&manager.fs_watcher);
+                        let now = now_ms();
+                        let events = tokio::task::spawn_blocking(move || {
+                            let mut guard = watcher_arc.blocking_lock();
+                            guard.retain_sessions(&active_ids);
+                            let mut emitted = Vec::new();
+                            for (sid, wt) in active {
+                                let changed = guard.poll_session(&sid, &wt, now);
+                                if !changed.is_empty() {
+                                    emitted.push((sid, changed));
+                                }
+                            }
+                            emitted
+                        })
+                        .await
+                        .unwrap_or_default();
+
+                        for (session_id, paths) in events {
+                            let _ = manager.events_tx.send(DaemonEvent::FsChanged {
+                                session_id,
+                                paths,
+                                by: "agent".to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+        });
     }
 
     /// URL dasar reverse proxy LLM lokal (`http://127.0.0.1:<port>`).
@@ -2571,7 +2640,16 @@ impl SessionManager {
                 .await
                 .map_err(|e| ManagerError::Config(format!("fs_tree task failed: {e}")))??;
 
+        let touched: HashSet<String> = self
+            .fs_watcher
+            .lock()
+            .await
+            .agent_touched_paths(&ses.id)
+            .into_iter()
+            .collect();
+
         // Perkaya flag status Git dari diff sesi jika tersedia (best-effort).
+        let mut status_map: HashMap<String, String> = HashMap::new();
         if let Ok(proj) = self.store.get_project(&ses.project_id).await {
             if let Ok(diff) = worktree_diff(
                 Path::new(&ses.worktree_path),
@@ -2581,7 +2659,6 @@ impl SessionManager {
             )
             .await
             {
-                let mut status_map: HashMap<String, String> = HashMap::new();
                 for f in diff.files {
                     let code = match f.status {
                         latch_core::model::DiffFileStatus::Added => "A",
@@ -2591,10 +2668,17 @@ impl SessionManager {
                     };
                     status_map.insert(f.path, code.to_string());
                 }
-                annotate_tree_git_status(&mut tree.entries, &status_map);
             }
         }
+        annotate_tree_flags(&mut tree.entries, &status_map, &touched);
         Ok(tree)
+    }
+
+    /// Mengembalikan daftar jalur berkas yang disentuh agen pada sesi ini (`IT-207`).
+    #[cfg(feature = "ide")]
+    pub async fn fs_agent_touched(&self, session_id: &str) -> Result<Vec<String>, ManagerError> {
+        let ses = self.store.get_session(session_id).await?;
+        Ok(self.fs_watcher.lock().await.agent_touched_paths(&ses.id))
     }
 
     /// Mengembalikan metadata ringan satu berkas/direktori di worktree sesi.
@@ -2672,6 +2756,12 @@ impl SessionManager {
             })
             .await;
 
+        self.fs_watcher.lock().await.record_user_write(
+            &ses.id,
+            std::slice::from_ref(&res.path),
+            now_ms(),
+        );
+
         let _ = self.events_tx.send(DaemonEvent::FsChanged {
             session_id: ses.id,
             paths: vec![res.path.clone()],
@@ -2712,6 +2802,11 @@ impl SessionManager {
             })
             .await;
 
+        self.fs_watcher
+            .lock()
+            .await
+            .record_user_write(&ses.id, &changed_paths, now_ms());
+
         let _ = self.events_tx.send(DaemonEvent::FsChanged {
             session_id: ses.id,
             paths: changed_paths,
@@ -2722,16 +2817,20 @@ impl SessionManager {
 }
 
 #[cfg(feature = "ide")]
-fn annotate_tree_git_status(
+fn annotate_tree_flags(
     entries: &mut [latch_fs_service::FsTreeEntry],
     status_map: &HashMap<String, String>,
+    agent_touched: &HashSet<String>,
 ) {
     for entry in entries {
         if let Some(code) = status_map.get(&entry.path) {
             entry.git_status = Some(code.clone());
         }
+        if agent_touched.contains(&entry.path) {
+            entry.agent_touched = true;
+        }
         if !entry.children.is_empty() {
-            annotate_tree_git_status(&mut entry.children, status_map);
+            annotate_tree_flags(&mut entry.children, status_map, agent_touched);
         }
     }
 }

@@ -212,6 +212,10 @@ pub async fn start_http_server(
         .route("/api/v1/sessions/{id}/fs/stat", get(handle_fs_stat))
         .route("/api/v1/sessions/{id}/fs/raw", get(handle_fs_raw))
         .route(
+            "/api/v1/sessions/{id}/fs/agent-touched",
+            get(handle_fs_agent_touched),
+        )
+        .route(
             "/api/v1/approvals",
             get(handle_list_approvals).post(handle_create_approval),
         )
@@ -1285,6 +1289,31 @@ async fn handle_fs_raw(
 
 #[cfg(not(feature = "ide"))]
 async fn handle_fs_raw() -> Response {
+    api_error(
+        StatusCode::NOT_IMPLEMENTED,
+        "not_implemented",
+        "IDE feature disabled",
+    )
+}
+
+#[cfg(feature = "ide")]
+async fn handle_fs_agent_touched(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Read).await {
+        return resp;
+    }
+    match state.manager.fs_agent_touched(&id).await {
+        Ok(paths) => Json(json!({ "paths": paths })).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+#[cfg(not(feature = "ide"))]
+async fn handle_fs_agent_touched() -> Response {
     api_error(
         StatusCode::NOT_IMPLEMENTED,
         "not_implemented",

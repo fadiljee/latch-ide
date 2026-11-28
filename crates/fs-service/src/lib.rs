@@ -4,6 +4,8 @@
 //! Menegakkan isolasi akar worktree, pencegahan symlink escape (`IT1`), larangan penuh akses/tulis `.git/`
 //! (`IT2`), kontrol konkurensi ETag SHA-256 (`IT9`), cadangan undo satu langkah (`0600`), serta batas ukuran.
 
+pub mod watcher;
+
 use std::fmt::Write as _;
 use std::fs::{self, Metadata};
 use std::path::{Component, Path, PathBuf};
@@ -95,6 +97,9 @@ pub struct FsTreeEntry {
     /// Flag status Git opsional (diisi lapisan daemon bila tersedia).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub git_status: Option<String>,
+    /// Menandakan berkas pernah diubah agen pada sesi aktif (`IT-207`).
+    #[serde(default)]
+    pub agent_touched: bool,
     /// Anak direktori bila `depth > 1`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<FsTreeEntry>,
@@ -541,6 +546,7 @@ fn collect_tree_dir(
             mtime_ms: metadata_mtime_ms(&meta),
             is_symlink,
             git_status: None,
+            agent_touched: false,
             children,
         });
     }
