@@ -5,6 +5,9 @@ Format mengikuti [Keep a Changelog](https://keepachangelog.com/id-ID/1.1.0/) dan
 ## [Unreleased]
 
 ### Added
+- **Peluncur Aman `latch ide` (`IT-103`, `FR-I102`):**
+  - `latch-cli`: menambahkan subcommand `latch ide [--path <repo>] [--no-browser] [--print-token]` (lintas OS Linux/macOS/Windows) yang otomatis menyalakan daemon, mendaftarkan repositori Git, dan meneruskan token lewat URL fragment (`/#token=...`) tanpa mencetak token mentah ke log/stdout secara bawaan.
+  - `web/`: `extractTokenFromHash` di `web/src/state/hosts.ts` langsung memindahkan token dari URL fragment ke memori sesi dan menghapusnya dari `window.history` agar tidak tersisa di riwayat browser, lengkap dengan unit test Vitest.
 - **Token Ber-Scope & Header Keamanan Workbench (`IT-102`, `IT-116`, `IDE_SECURITY.md`):**
   - `latch-core` & `latch-workbench-api`: enum kanonis `TokenScope` (`read`, `control`, `write`, `shell-sandbox`, `shell-host`, `admin`), `ScopedToken`, `CreatedToken`, dan parser CSV scope.
   - `latch-store`: migrasi SQLite baru `0002_scoped_tokens.sql` (`api_tokens`, hanya menyimpan hash SHA-256 token, tanpa plaintext).

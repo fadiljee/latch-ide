@@ -1,9 +1,38 @@
 import { create } from "zustand";
 import type { DaemonHealth, Project } from "../transport/protocol";
 
+export function extractTokenFromHash(): string {
+  if (typeof window === "undefined") {
+    return "";
+  }
+  const hash = window.location.hash;
+  if (!hash || !hash.startsWith("#")) {
+    return "";
+  }
+  const params = new URLSearchParams(hash.slice(1));
+  const raw = params.get("token")?.trim() ?? "";
+  if (raw) {
+    try {
+      window.history.replaceState(null, "", window.location.pathname + window.location.search);
+    } catch {
+      // Abaikan bila history API terbatas
+    }
+  }
+  return raw;
+}
+
 function readInitialToken(): string {
   if (typeof window !== "undefined" && window.__LATCH_TOKEN__) {
     return window.__LATCH_TOKEN__;
+  }
+  const fromHash = extractTokenFromHash();
+  if (fromHash) {
+    try {
+      window.sessionStorage.setItem("latch_token", fromHash);
+    } catch {
+      // Abaikan bila sessionStorage tidak tersedia
+    }
+    return fromHash;
   }
   try {
     return window.sessionStorage.getItem("latch_token") ?? "";

@@ -82,6 +82,18 @@ enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Buka Agent IDE Workbench di browser dengan token fragment aman (IT-103, FR-I102).
+    Ide {
+        /// Jalur repositori Git target (bawaan: direktori saat ini bila repo Git).
+        #[arg(long)]
+        path: Option<String>,
+        /// Jangan buka browser secara otomatis (hanya menyalakan daemon & mencetak URL).
+        #[arg(long)]
+        no_browser: bool,
+        /// Tampilkan bearer token di terminal (nonaktif bawaan agar tidak bocor ke log terminal).
+        #[arg(long)]
+        print_token: bool,
+    },
     /// Buka antarmuka Web Workbench di browser (auto-start daemon).
     #[command(alias = "open")]
     Web,
@@ -282,7 +294,12 @@ fn main() -> anyhow::Result<()> {
             local_port,
             remote_port,
         } => run_remote_tunnel(&target, local_port, remote_port),
-        Commands::Web => run_open_web(&paths),
+        Commands::Ide {
+            path,
+            no_browser,
+            print_token,
+        } => run_open_workbench(&paths, path.as_deref(), !no_browser, print_token),
+        Commands::Web => run_open_workbench(&paths, None, true, false),
         other => run_async_client(paths, other),
     }
 }
@@ -319,19 +336,76 @@ fn ensure_daemon_running(paths: &RuntimePaths) -> anyhow::Result<()> {
     spawn_background_daemon(paths)
 }
 
-fn run_open_web(paths: &RuntimePaths) -> anyhow::Result<()> {
-    ensure_daemon_running(paths)?;
-    let cfg = load_latch_config(&paths.config_file()).unwrap_or_default();
-    let tok = latch_daemon::http_server::ensure_or_load_token(&paths.token_file())?;
-    let url = format!("http://{}", cfg.daemon.http_bind);
-    println!("Latch Workbench : {url}");
-    println!("Bearer Token    : {tok}");
-    let _ = Command::new("xdg-open")
-        .arg(&url)
+fn build_workbench_fragment_url(http_bind: &str, token: &str) -> String {
+    format!("http://{http_bind}/#token={token}")
+}
+
+fn open_browser_url(url: &str) {
+    #[cfg(target_os = "macos")]
+    let _ = Command::new("open")
+        .arg(url)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn();
+    #[cfg(target_os = "windows")]
+    let _ = Command::new("cmd")
+        .args(["/C", "start", "", url])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let _ = Command::new("xdg-open")
+        .arg(url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+}
+
+fn run_open_workbench(
+    paths: &RuntimePaths,
+    repo_path: Option<&str>,
+    launch_browser: bool,
+    print_token: bool,
+) -> anyhow::Result<()> {
+    ensure_daemon_running(paths)?;
+
+    // Auto-daftarkan repo target / CWD bila merupakan repositori Git.
+    let target_dir = match repo_path {
+        Some(p) => Some(Path::new(p).to_path_buf()),
+        None => std::env::current_dir().ok(),
+    };
+    if let Some(dir) = target_dir {
+        if let Ok(abs) = std::fs::canonicalize(&dir) {
+            if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                let client = UdsClient::new(&paths.socket_path);
+                let _ = rt.block_on(client.project_add(&ProjectAddParams {
+                    repo_path: abs.to_string_lossy().to_string(),
+                    name: None,
+                    default_branch: None,
+                }));
+            }
+        }
+    }
+
+    let cfg = load_latch_config(&paths.config_file()).unwrap_or_default();
+    let tok = latch_daemon::http_server::ensure_or_load_token(&paths.token_file())?;
+    let base_url = format!("http://{}", cfg.daemon.http_bind);
+    let auth_url = build_workbench_fragment_url(&cfg.daemon.http_bind, &tok);
+    println!("Latch Agent IDE : {base_url}");
+    if print_token {
+        println!("Bearer Token    : {tok}");
+    } else {
+        println!("Autentikasi     : diteruskan via URL fragment aman (gunakan `latch token show` bila perlu manual).");
+    }
+    if launch_browser {
+        open_browser_url(&auth_url);
+    }
     Ok(())
 }
 
@@ -595,6 +669,7 @@ fn run_async_client(paths: RuntimePaths, cmd: Commands) -> anyhow::Result<()> {
             }
             | Commands::Config { .. }
             | Commands::Remote { .. }
+            | Commands::Ide { .. }
             | Commands::Web => {}
         }
         Ok(())
@@ -901,4 +976,26 @@ async fn attach_cli_pty(client: &UdsClient, session_id: &str) -> anyhow::Result<
     disable_raw_mode()?;
     println!("\r\n[detached]");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_workbench_fragment_url, parse_duration_secs};
+
+    #[test]
+    fn builds_fragment_url_without_query_token() {
+        let url = build_workbench_fragment_url("127.0.0.1:7878", "secret-tok-abc");
+        assert_eq!(url, "http://127.0.0.1:7878/#token=secret-tok-abc");
+        assert!(!url.contains("?token="));
+    }
+
+    #[test]
+    fn parses_human_duration_strings() {
+        assert_eq!(parse_duration_secs("30s").unwrap(), 30);
+        assert_eq!(parse_duration_secs("15m").unwrap(), 900);
+        assert_eq!(parse_duration_secs("12h").unwrap(), 43_200);
+        assert_eq!(parse_duration_secs("7d").unwrap(), 604_800);
+        assert!(parse_duration_secs("0d").is_err());
+        assert!(parse_duration_secs("bad").is_err());
+    }
 }
