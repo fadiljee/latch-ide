@@ -21,11 +21,11 @@ use latch_core::id::{ms_to_rfc3339, now_ms};
 use latch_core::integrations::{McpServerConfig, PluginConfig};
 use latch_core::model::{
     ApprovalActionType, ApprovalDecision, AuditEntry, MergeStrategy, Session,
-    SessionTelemetrySummary,
+    SessionTelemetrySummary, TokenScope,
 };
 use latch_core::protocol::{
     GcParams, PipelineArenaSelectParams, PipelineListParams, PipelineRunParams, ProjectAddParams,
-    SessionDiffParams, SessionListParams, SessionMergeParams, SessionRunParams,
+    SessionDiffParams, SessionListParams, SessionMergeParams, SessionRunParams, TokenCreateParams,
 };
 use latch_dag::DagRuntimeState;
 use latch_pty_pool::PtyFrame;
@@ -256,6 +256,11 @@ pub async fn start_http_server(
             "/api/v1/plugins/{id}",
             put(handle_upsert_plugin).delete(handle_delete_plugin),
         )
+        .route(
+            "/api/v1/tokens",
+            get(handle_list_tokens).post(handle_create_token),
+        )
+        .route("/api/v1/tokens/{id}", delete(handle_revoke_token))
         .route("/api/v1/ws", get(handle_events_ws))
         .route("/api/v1/sessions/{id}/pty", get(handle_pty_ws))
         .fallback(get(handle_static_asset))
@@ -303,12 +308,26 @@ fn check_origin(headers: &HeaderMap) -> Result<(), Response> {
     }
 }
 
+async fn resolve_token_scopes(state: &HttpState, presented: &str) -> Option<Vec<TokenScope>> {
+    if presented.is_empty() {
+        return None;
+    }
+    if verify_token_constant_time(&state.token, presented) {
+        return Some(TokenScope::owner_default_scopes());
+    }
+    match state.manager.authenticate_scoped_token(presented).await {
+        Ok(Some(tok)) => Some(tok.scopes),
+        _ => None,
+    }
+}
+
 #[allow(clippy::result_large_err)]
 async fn authorize_http(
     state: &HttpState,
     headers: &HeaderMap,
     peer: SocketAddr,
-) -> Result<(), Response> {
+    required_scope: TokenScope,
+) -> Result<Vec<TokenScope>, Response> {
     check_origin(headers)?;
     if state.limiter.is_rate_limited(peer.ip()) {
         return Err(api_error(
@@ -324,8 +343,29 @@ async fn authorize_http(
         .and_then(|raw| raw.strip_prefix("Bearer "))
         .unwrap_or("");
 
-    if verify_token_constant_time(&state.token, presented) {
-        return Ok(());
+    if let Some(scopes) = resolve_token_scopes(state, presented).await {
+        if scopes.contains(&required_scope) {
+            return Ok(scopes);
+        }
+        let _ = state
+            .manager
+            .record_audit(AuditEntry {
+                id: None,
+                session_id: None,
+                kind: "scope_denied".to_string(),
+                detail: format!(
+                    "token missing required scope '{}' from {}",
+                    required_scope.as_str(),
+                    peer.ip()
+                ),
+                timestamp: now_ms(),
+            })
+            .await;
+        return Err(api_error(
+            StatusCode::FORBIDDEN,
+            "insufficient_scope",
+            format!("token lacks required scope '{}'", required_scope.as_str()),
+        ));
     }
 
     let hit_limit = state.limiter.record_failure(peer.ip());
@@ -423,7 +463,7 @@ async fn handle_metrics(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Read).await {
         return resp;
     }
     let h = state.manager.health().await;
@@ -453,7 +493,7 @@ async fn handle_list_projects(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Read).await {
         return resp;
     }
     match state.manager.list_projects().await {
@@ -468,7 +508,7 @@ async fn handle_add_project(
     headers: HeaderMap,
     Json(params): Json<ProjectAddParams>,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Admin).await {
         return resp;
     }
     match state.manager.add_project(params).await {
@@ -483,7 +523,7 @@ async fn handle_remove_project(
     headers: HeaderMap,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Admin).await {
         return resp;
     }
     match state.manager.remove_project(&id).await {
@@ -504,7 +544,7 @@ async fn handle_list_sessions(
     headers: HeaderMap,
     Query(q): Query<SessionListQuery>,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Read).await {
         return resp;
     }
     match state
@@ -526,7 +566,7 @@ async fn handle_run_session(
     headers: HeaderMap,
     Json(params): Json<SessionRunParams>,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Control).await {
         return resp;
     }
     match state.manager.run_session(params).await {
@@ -548,7 +588,7 @@ async fn handle_get_session(
     headers: HeaderMap,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Read).await {
         return resp;
     }
     match state.manager.get_session(&id).await {
@@ -570,7 +610,7 @@ async fn handle_pause_session(
     headers: HeaderMap,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Control).await {
         return resp;
     }
     match state.manager.pause_session(&id).await {
@@ -585,7 +625,7 @@ async fn handle_resume_session(
     headers: HeaderMap,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Control).await {
         return resp;
     }
     match state.manager.resume_session(&id).await {
@@ -600,7 +640,7 @@ async fn handle_kill_session(
     headers: HeaderMap,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Control).await {
         return resp;
     }
     match state.manager.kill_session(&id).await {
@@ -621,7 +661,7 @@ async fn handle_input_session(
     AxumPath(id): AxumPath<String>,
     Json(body): Json<InputBody>,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Control).await {
         return resp;
     }
     let Ok(bytes) = BASE64_STD.decode(&body.data_base64) else {
@@ -650,7 +690,7 @@ async fn handle_resize_session(
     AxumPath(id): AxumPath<String>,
     Json(body): Json<ResizeBody>,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Control).await {
         return resp;
     }
     match state
@@ -676,7 +716,7 @@ async fn handle_diff_session(
     AxumPath(id): AxumPath<String>,
     Query(q): Query<DiffQuery>,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Read).await {
         return resp;
     }
     match state
@@ -699,7 +739,7 @@ async fn handle_merge_check(
     headers: HeaderMap,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Read).await {
         return resp;
     }
     match state.manager.merge_check_session(&id).await {
@@ -722,7 +762,7 @@ async fn handle_merge_session(
     AxumPath(id): AxumPath<String>,
     Json(body): Json<MergeBody>,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Control).await {
         return resp;
     }
     match state
@@ -745,7 +785,7 @@ async fn handle_discard_session(
     headers: HeaderMap,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Control).await {
         return resp;
     }
     match state.manager.discard_session(&id).await {
@@ -766,7 +806,7 @@ async fn handle_session_telemetry(
     AxumPath(id): AxumPath<String>,
     Query(q): Query<TelemetryQuery>,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Read).await {
         return resp;
     }
     match state.manager.session_telemetry(&id, q.since).await {
@@ -788,7 +828,7 @@ async fn handle_session_screen(
     headers: HeaderMap,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Read).await {
         return resp;
     }
     match state.manager.screen_snapshot(&id).await {
@@ -808,7 +848,7 @@ async fn handle_list_approvals(
     headers: HeaderMap,
     Query(q): Query<ApprovalListQuery>,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Read).await {
         return resp;
     }
     let filter = match q.status {
@@ -851,7 +891,7 @@ async fn handle_create_approval(
     headers: HeaderMap,
     Json(body): Json<CreateApprovalBody>,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Control).await {
         return resp;
     }
     match state
@@ -883,7 +923,7 @@ async fn handle_decide_approval(
     AxumPath(id): AxumPath<String>,
     Json(body): Json<DecideApprovalBody>,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Control).await {
         return resp;
     }
     if body.decision == ApprovalDecision::Pending {
@@ -915,7 +955,7 @@ async fn handle_list_pipelines(
     headers: HeaderMap,
     Query(q): Query<ListPipelinesQuery>,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Read).await {
         return resp;
     }
     match state
@@ -934,7 +974,7 @@ async fn handle_run_pipeline(
     headers: HeaderMap,
     Json(body): Json<PipelineRunParams>,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Control).await {
         return resp;
     }
     match state.manager.run_pipeline(body).await {
@@ -949,7 +989,7 @@ async fn handle_get_pipeline(
     headers: HeaderMap,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Read).await {
         return resp;
     }
     match state.manager.get_pipeline(&id).await {
@@ -964,7 +1004,7 @@ async fn handle_cancel_pipeline(
     headers: HeaderMap,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Control).await {
         return resp;
     }
     match state.manager.cancel_pipeline(&id).await {
@@ -978,7 +1018,7 @@ async fn handle_list_agents(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Read).await {
         return resp;
     }
     Json(state.manager.list_agents().await).into_response()
@@ -991,7 +1031,7 @@ async fn handle_upsert_agent(
     AxumPath(id): AxumPath<String>,
     Json(profile): Json<AgentProfile>,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Admin).await {
         return resp;
     }
     match state.manager.upsert_agent(id, profile).await {
@@ -1006,7 +1046,7 @@ async fn handle_delete_agent(
     headers: HeaderMap,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Admin).await {
         return resp;
     }
     match state.manager.delete_agent(&id).await {
@@ -1027,7 +1067,7 @@ async fn handle_set_agent_runtime_key(
     AxumPath(id): AxumPath<String>,
     Json(body): Json<RuntimeKeyBody>,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Admin).await {
         return resp;
     }
     match state.manager.set_agent_runtime_key(&id, body.api_key).await {
@@ -1048,7 +1088,7 @@ async fn handle_agent_login(
     AxumPath(id): AxumPath<String>,
     body: Option<Json<InteractiveLoginBody>>,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Control).await {
         return resp;
     }
     let project = body.and_then(|Json(b)| b.project);
@@ -1063,7 +1103,7 @@ async fn handle_github_status(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Read).await {
         return resp;
     }
     Json(state.manager.github_status().await).into_response()
@@ -1074,7 +1114,7 @@ async fn handle_github_repos(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Read).await {
         return resp;
     }
     match state.manager.github_list_repos().await {
@@ -1089,7 +1129,7 @@ async fn handle_github_login(
     headers: HeaderMap,
     body: Option<Json<InteractiveLoginBody>>,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Control).await {
         return resp;
     }
     let project = body.and_then(|Json(b)| b.project);
@@ -1111,7 +1151,7 @@ async fn handle_github_clone(
     headers: HeaderMap,
     Json(body): Json<GitHubCloneBody>,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Admin).await {
         return resp;
     }
     match state
@@ -1129,7 +1169,7 @@ async fn handle_list_mcp(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Read).await {
         return resp;
     }
     Json(state.manager.list_mcp_servers().await).into_response()
@@ -1142,7 +1182,7 @@ async fn handle_upsert_mcp(
     AxumPath(id): AxumPath<String>,
     Json(mut server): Json<McpServerConfig>,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Admin).await {
         return resp;
     }
     server.id = id;
@@ -1158,7 +1198,7 @@ async fn handle_delete_mcp(
     headers: HeaderMap,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Admin).await {
         return resp;
     }
     match state.manager.delete_mcp_server(&id).await {
@@ -1172,7 +1212,7 @@ async fn handle_list_plugins(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Read).await {
         return resp;
     }
     Json(state.manager.list_plugins().await).into_response()
@@ -1185,7 +1225,7 @@ async fn handle_upsert_plugin(
     AxumPath(id): AxumPath<String>,
     Json(mut plugin): Json<PluginConfig>,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Admin).await {
         return resp;
     }
     plugin.id = id;
@@ -1201,7 +1241,7 @@ async fn handle_delete_plugin(
     headers: HeaderMap,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Admin).await {
         return resp;
     }
     match state.manager.delete_plugin(&id).await {
@@ -1216,7 +1256,7 @@ async fn handle_pipeline_arena(
     headers: HeaderMap,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Read).await {
         return resp;
     }
     let run = match state.manager.get_pipeline(&id).await {
@@ -1268,7 +1308,7 @@ async fn handle_pipeline_arena_select(
     AxumPath(id): AxumPath<String>,
     Json(body): Json<ArenaSelectBody>,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Control).await {
         return resp;
     }
     match state
@@ -1291,7 +1331,7 @@ async fn handle_hibernate_session(
     headers: HeaderMap,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Control).await {
         return resp;
     }
     match state.manager.hibernate_session(&id).await {
@@ -1306,12 +1346,60 @@ async fn handle_gc(
     headers: HeaderMap,
     body: Option<Json<GcParams>>,
 ) -> Response {
-    if let Err(resp) = authorize_http(&state, &headers, peer).await {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Admin).await {
         return resp;
     }
     let dry_run = body.is_some_and(|Json(p)| p.dry_run);
     match state.manager.run_gc(dry_run).await {
         Ok(report) => Json(report).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+async fn handle_list_tokens(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Admin).await {
+        return resp;
+    }
+    match state.manager.list_scoped_tokens().await {
+        Ok(tokens) => Json(tokens).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+async fn handle_create_token(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(body): Json<TokenCreateParams>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Admin).await {
+        return resp;
+    }
+    match state
+        .manager
+        .create_scoped_token(body.label, body.scopes, body.expires_in_secs)
+        .await
+    {
+        Ok(created) => (StatusCode::CREATED, Json(created)).into_response(),
+        Err(err) => manager_err_to_response(err),
+    }
+}
+
+async fn handle_revoke_token(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Admin).await {
+        return resp;
+    }
+    match state.manager.revoke_scoped_token(&id).await {
+        Ok(revoked) => Json(revoked).into_response(),
         Err(err) => manager_err_to_response(err),
     }
 }
@@ -1331,24 +1419,32 @@ fn extract_ws_subprotocol_token(headers: &HeaderMap) -> Option<String> {
 async fn authenticate_ws_socket(
     socket: &mut WebSocket,
     state: &HttpState,
-    pre_auth: bool,
+    pre_auth_scopes: Option<Vec<TokenScope>>,
     peer: SocketAddr,
-) -> bool {
-    if pre_auth {
-        return true;
-    }
-    let first = tokio::time::timeout(WS_AUTH_TIMEOUT, socket.recv()).await;
-    let Ok(Some(Ok(Message::Text(text)))) = first else {
-        return false;
+    required_scope: TokenScope,
+) -> Option<Vec<TokenScope>> {
+    let scopes = if let Some(s) = pre_auth_scopes {
+        Some(s)
+    } else {
+        let first = tokio::time::timeout(WS_AUTH_TIMEOUT, socket.recv()).await;
+        let Ok(Some(Ok(Message::Text(text)))) = first else {
+            return None;
+        };
+        let parsed: Result<serde_json::Value, _> = serde_json::from_str(&text);
+        let tok = parsed.ok().and_then(|v| {
+            if v.get("type").and_then(|t| t.as_str()) == Some("auth") {
+                v.get("token").and_then(|t| t.as_str()).map(str::to_string)
+            } else {
+                None
+            }
+        });
+        match tok {
+            Some(ref t) => resolve_token_scopes(state, t).await,
+            None => None,
+        }
     };
-    let parsed: Result<serde_json::Value, _> = serde_json::from_str(&text);
-    let ok = parsed.ok().is_some_and(|v| {
-        v.get("type").and_then(|t| t.as_str()) == Some("auth")
-            && v.get("token")
-                .and_then(|t| t.as_str())
-                .is_some_and(|tok| verify_token_constant_time(&state.token, tok))
-    });
-    if !ok {
+
+    let Some(granted) = scopes else {
         state.limiter.record_failure(peer.ip());
         let _ = state
             .manager
@@ -1360,8 +1456,28 @@ async fn authenticate_ws_socket(
                 timestamp: now_ms(),
             })
             .await;
+        return None;
+    };
+
+    if !granted.contains(&required_scope) {
+        let _ = state
+            .manager
+            .record_audit(AuditEntry {
+                id: None,
+                session_id: None,
+                kind: "scope_denied".to_string(),
+                detail: format!(
+                    "WS token missing required scope '{}' from {}",
+                    required_scope.as_str(),
+                    peer.ip()
+                ),
+                timestamp: now_ms(),
+            })
+            .await;
+        return None;
     }
-    ok
+
+    Some(granted)
 }
 
 async fn handle_events_ws(
@@ -1381,14 +1497,19 @@ async fn handle_events_ws(
         );
     }
 
-    let pre_auth = extract_ws_subprotocol_token(&headers)
-        .is_some_and(|t| verify_token_constant_time(&state.token, &t));
+    let pre_auth_scopes = match extract_ws_subprotocol_token(&headers) {
+        Some(tok) => resolve_token_scopes(&state, &tok).await,
+        None => None,
+    };
     let mut upgrade = ws;
-    if pre_auth {
+    if pre_auth_scopes.is_some() {
         upgrade = upgrade.protocols(["agentd.v1"]);
     }
     upgrade.on_upgrade(move |mut socket| async move {
-        if !authenticate_ws_socket(&mut socket, &state, pre_auth, peer).await {
+        if authenticate_ws_socket(&mut socket, &state, pre_auth_scopes, peer, TokenScope::Read)
+            .await
+            .is_none()
+        {
             let _ = socket.send(Message::Close(None)).await;
             return;
         }
@@ -1507,17 +1628,28 @@ async fn handle_pty_ws(
         );
     }
 
-    let pre_auth = extract_ws_subprotocol_token(&headers)
-        .is_some_and(|t| verify_token_constant_time(&state.token, &t));
+    let pre_auth_scopes = match extract_ws_subprotocol_token(&headers) {
+        Some(tok) => resolve_token_scopes(&state, &tok).await,
+        None => None,
+    };
     let mut upgrade = ws;
-    if pre_auth {
+    if pre_auth_scopes.is_some() {
         upgrade = upgrade.protocols(["agentd.v1"]);
     }
     upgrade.on_upgrade(move |mut socket| async move {
-        if !authenticate_ws_socket(&mut socket, &state, pre_auth, peer).await {
+        let Some(granted_scopes) = authenticate_ws_socket(
+            &mut socket,
+            &state,
+            pre_auth_scopes,
+            peer,
+            TokenScope::Read,
+        )
+        .await
+        else {
             let _ = socket.send(Message::Close(None)).await;
             return;
-        }
+        };
+        let can_control = granted_scopes.contains(&TokenScope::Control);
         let Ok((_ses, handle, mut sub)) = state.manager.attach_session(&id).await else {
             let _ = socket.send(Message::Close(None)).await;
             return;
@@ -1557,7 +1689,10 @@ async fn handle_pty_ws(
                             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
                                 match val.get("type").and_then(|v| v.as_str()) {
                                     Some("input") => {
-                                        if let Some(data) = val.get("data").and_then(|v| v.as_str()) {
+                                        if !can_control {
+                                            let err = json!({ "type": "error", "code": "insufficient_scope" });
+                                            let _ = socket.send(Message::Text(err.to_string().into())).await;
+                                        } else if let Some(data) = val.get("data").and_then(|v| v.as_str()) {
                                             let _ = handle.write_input(data.as_bytes());
                                         }
                                     }
@@ -1622,6 +1757,15 @@ async fn handle_static_asset(uri: Uri) -> Response {
     headers.insert(
         header::REFERRER_POLICY,
         HeaderValue::from_static("no-referrer"),
+    );
+    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    headers.insert(
+        header::HeaderName::from_static("cross-origin-opener-policy"),
+        HeaderValue::from_static("same-origin"),
+    );
+    headers.insert(
+        header::HeaderName::from_static("cross-origin-resource-policy"),
+        HeaderValue::from_static("same-origin"),
     );
     resp
 }

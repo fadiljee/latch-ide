@@ -13,11 +13,11 @@ use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use latch_core::config::{load_agents_config, load_latch_config, RuntimePaths};
 use latch_core::id::{ms_to_rfc3339, short_id};
-use latch_core::model::MergeStrategy;
+use latch_core::model::{format_scopes_csv, parse_scopes_csv, MergeStrategy};
 use latch_core::protocol::{
     read_raw_frame, write_raw_frame, AttachFrame, PipelineArenaSelectParams, PipelineListParams,
     PipelineRunParams, ProjectAddParams, SessionDiffParams, SessionListParams, SessionMergeParams,
-    SessionRunParams, UdsClient,
+    SessionRunParams, TokenCreateParams, UdsClient,
 };
 
 #[derive(Parser)]
@@ -91,10 +91,29 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum TokenCmd {
-    /// Tampilkan bearer token aktif (membuat baru bila belum ada).
+    /// Tampilkan bearer token pemilik lokal aktif (membuat baru bila belum ada).
     Show,
-    /// Buat ulang bearer token 256-bit baru (`0600`).
+    /// Buat ulang bearer token pemilik lokal 256-bit baru (`0600`).
     Rotate,
+    /// Buat bearer token ber-scope baru (disimpan sebagai hash SHA-256; token mentah ditampilkan sekali).
+    Create {
+        /// Daftar scope dipisahkan koma: read,control,write,shell-sandbox,shell-host,admin.
+        #[arg(long)]
+        scopes: String,
+        /// Label ramah pengguna (mis. `hp`, `readonly`).
+        #[arg(long, default_value = "custom")]
+        label: String,
+        /// Masa berlaku opsional (mis. `30m`, `12h`, `7d`).
+        #[arg(long)]
+        expires: Option<String>,
+    },
+    /// Tampilkan daftar token ber-scope terdaftar (tanpa nilai rahasia).
+    Ls,
+    /// Cabut (revoke) token ber-scope berdasarkan ID atau prefiks ID.
+    Revoke {
+        /// ID penuh atau prefiks ID token.
+        id: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -266,6 +285,27 @@ fn main() -> anyhow::Result<()> {
         Commands::Web => run_open_web(&paths),
         other => run_async_client(paths, other),
     }
+}
+
+fn parse_duration_secs(raw: &str) -> anyhow::Result<u64> {
+    let trimmed = raw.trim();
+    if trimmed.len() < 2 {
+        anyhow::bail!("invalid duration '{raw}' (use e.g. 30m, 12h, 7d)");
+    }
+    let (num_part, unit) = trimmed.split_at(trimmed.len() - 1);
+    let val: u64 = num_part
+        .parse()
+        .with_context(|| format!("invalid duration number in '{raw}'"))?;
+    let mult = match unit {
+        "s" => 1,
+        "m" => 60,
+        "h" => 3_600,
+        "d" => 86_400,
+        _ => anyhow::bail!("invalid duration unit '{unit}' in '{raw}' (expected s, m, h, or d)"),
+    };
+    val.checked_mul(mult)
+        .filter(|&v| v > 0)
+        .ok_or_else(|| anyhow::anyhow!("duration '{raw}' out of range"))
 }
 
 fn ensure_daemon_running(paths: &RuntimePaths) -> anyhow::Result<()> {
@@ -483,11 +523,77 @@ fn run_async_client(paths: RuntimePaths, cmd: Commands) -> anyhow::Result<()> {
                 }
                 latch_tui::run_tui(paths.socket_path).await?;
             }
+            Commands::Token { action } => match action {
+                TokenCmd::Create {
+                    scopes,
+                    label,
+                    expires,
+                } => {
+                    let parsed_scopes = parse_scopes_csv(&scopes)
+                        .map_err(|e| anyhow::anyhow!("invalid --scopes: {e}"))?;
+                    let expires_in_secs = match expires {
+                        Some(raw) => Some(parse_duration_secs(&raw)?),
+                        None => None,
+                    };
+                    let created = client
+                        .token_create(&TokenCreateParams {
+                            label,
+                            scopes: parsed_scopes,
+                            expires_in_secs,
+                        })
+                        .await?;
+                    println!(
+                        "id={} label={} scopes={}",
+                        created.metadata.id,
+                        created.metadata.label,
+                        format_scopes_csv(&created.metadata.scopes)
+                    );
+                    if let Some(exp) = created.metadata.expires_at {
+                        println!("expires={}", ms_to_rfc3339(exp));
+                    }
+                    println!("token={}", created.token);
+                    println!("Simpan token ini sekarang; nilai mentah tidak disimpan di daemon.");
+                }
+                TokenCmd::Ls => {
+                    let tokens = client.token_list().await?;
+                    if tokens.is_empty() {
+                        println!("Belum ada token ber-scope tambahan.");
+                    } else {
+                        for tok in tokens {
+                            let state = if tok.revoked_at.is_some() {
+                                "revoked"
+                            } else {
+                                "active"
+                            };
+                            let exp = tok
+                                .expires_at
+                                .map(ms_to_rfc3339)
+                                .unwrap_or_else(|| "never".to_string());
+                            println!(
+                                "{}\t{}\t{}\t{}\texpires={}",
+                                short_id(&tok.id),
+                                state,
+                                tok.label,
+                                format_scopes_csv(&tok.scopes),
+                                exp
+                            );
+                        }
+                    }
+                }
+                TokenCmd::Revoke { id } => {
+                    let revoked = client.token_revoke(&id).await?;
+                    println!(
+                        "Token {} (label={}) berhasil dicabut.",
+                        short_id(&revoked.id),
+                        revoked.label
+                    );
+                }
+                TokenCmd::Show | TokenCmd::Rotate => {}
+            },
             Commands::Daemon {
                 action: DaemonCmd::Start { .. },
             }
             | Commands::Config { .. }
-            | Commands::Token { .. }
             | Commands::Remote { .. }
             | Commands::Web => {}
         }

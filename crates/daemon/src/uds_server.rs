@@ -11,6 +11,7 @@ use latch_core::protocol::{
     IpcStream, JsonRpcRequest, JsonRpcResponse, PipelineArenaSelectParams, PipelineIdParams,
     PipelineListParams, PipelineRunParams, ProjectAddParams, SessionDiffParams, SessionIdParams,
     SessionListParams, SessionMergeParams, SessionResizeParams, SessionRunParams,
+    TokenCreateParams, TokenRevokeParams,
 };
 use latch_pty_pool::PtyFrame;
 #[cfg(unix)]
@@ -403,6 +404,24 @@ async fn dispatch_rpc(req: JsonRpcRequest, mgr: &SessionManager) -> JsonRpcRespo
                 Err(e) => Err(ManagerError::Config(e.to_string())),
             }
         }
+        "token.create" => match serde_json::from_value::<TokenCreateParams>(req.params) {
+            Ok(p) => mgr
+                .create_scoped_token(p.label, p.scopes, p.expires_in_secs)
+                .await
+                .map(|v| serde_json::to_value(v).unwrap_or(serde_json::Value::Null)),
+            Err(e) => Err(ManagerError::Config(e.to_string())),
+        },
+        "token.list" => mgr
+            .list_scoped_tokens()
+            .await
+            .map(|v| serde_json::to_value(v).unwrap_or(serde_json::Value::Null)),
+        "token.revoke" => match serde_json::from_value::<TokenRevokeParams>(req.params) {
+            Ok(p) => mgr
+                .revoke_scoped_token(&p.id)
+                .await
+                .map(|v| serde_json::to_value(v).unwrap_or(serde_json::Value::Null)),
+            Err(e) => Err(ManagerError::Config(e.to_string())),
+        },
         other => return JsonRpcResponse::err(id, -32601, format!("unknown method '{other}'")),
     };
 

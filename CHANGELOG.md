@@ -5,6 +5,10 @@ Format mengikuti [Keep a Changelog](https://keepachangelog.com/id-ID/1.1.0/) dan
 ## [Unreleased]
 
 ### Added
+- **Token Ber-Scope & Header Keamanan Workbench (`IT-102`, `IT-116`, `IDE_SECURITY.md`):**
+  - `latch-core` & `latch-workbench-api`: enum kanonis `TokenScope` (`read`, `control`, `write`, `shell-sandbox`, `shell-host`, `admin`), `ScopedToken`, `CreatedToken`, dan parser CSV scope.
+  - `latch-store`: migrasi SQLite baru `0002_scoped_tokens.sql` (`api_tokens`, hanya menyimpan hash SHA-256 token, tanpa plaintext).
+  - `latch-daemon` & `latch-cli`: penegakan scope di seluruh 44 rute REST + WebSocket (`403 insufficient_scope` + audit `scope_denied`), endpoint `/api/v1/tokens*`, RPC `token.create`/`list`/`revoke`, perintah CLI `latch token create --scopes ... [--label] [--expires]`, `latch token ls`, `latch token revoke <id>`, header `X-Frame-Options: DENY` + `COOP`/`CORP` `same-origin`, serta tes keamanan `crates/daemon/tests/scoped_tokens.rs`.
 - **Matriks Kompatibilitas CLI Agen (`T-902`, `IT-904`):**
   - Menambahkan `COMPATIBILITY.md` (dan `docs/compat/agents.md`) yang mendokumentasikan seluruh 13 profil agen coding bawaan (OAuth default, API key proxy, `extra_rw`, dan fitur per mode) beserta tes invarian profil bawaan di `latch-core`.
 - **Pustaka Profil Agen & Konfigurasi Contoh (`T-904`, `FR-07`):**
