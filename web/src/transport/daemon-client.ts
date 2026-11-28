@@ -20,6 +20,7 @@ import type {
   SessionDiff,
   SessionTelemetrySummary,
   TelemetryRecord,
+  UpdateInfo,
 } from "./protocol";
 
 declare global {
@@ -78,6 +79,12 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
 
 export async function fetchHealth(): Promise<DaemonHealth> {
   return fetchJson<DaemonHealth>(`${apiBase()}/api/v1/health`);
+}
+
+export async function fetchUpdateInfo(token: string): Promise<UpdateInfo> {
+  return fetchJson<UpdateInfo>(`${apiBase()}/api/v1/update`, {
+    headers: authHeaders(token),
+  });
 }
 
 export async function fetchProjects(token: string): Promise<Project[]> {

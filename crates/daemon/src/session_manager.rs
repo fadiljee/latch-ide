@@ -3019,6 +3019,11 @@ impl SessionManager {
         Ok(symbols)
     }
 
+    /// Apakah pemeriksaan versi rilis terbaru aktif (`[updates] check`).
+    pub fn update_check_enabled(&self) -> bool {
+        self.config.updates.check
+    }
+
     /// Membaca preferensi IDE pengguna dari `config_dir/prefs.json` (`IT-212`).
     pub async fn get_prefs(&self) -> serde_json::Value {
         let path = self.paths.prefs_file();

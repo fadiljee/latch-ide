@@ -3,6 +3,12 @@ export type Locale = "id" | "en";
 export interface Catalog {
   appName: string;
   localeToggleLabel: string;
+  update: {
+    available: string;
+    howTo: string;
+    notes: string;
+    dismiss: string;
+  };
   connection: {
     label: string;
     connected: string;
@@ -253,6 +259,12 @@ export const CATALOGS: Record<Locale, Catalog> = {
   id: {
     appName: "Latch IDE",
     localeToggleLabel: "Ganti bahasa antarmuka",
+    update: {
+      available: "Versi baru Latch IDE tersedia: {latest} (terpasang: {current}).",
+      howTo: "Perbarui dengan menjalankan:",
+      notes: "Catatan rilis",
+      dismiss: "Tutup notifikasi pembaruan",
+    },
     connection: {
       label: "Status daemon",
       connected: "Terhubung",
@@ -503,6 +515,12 @@ export const CATALOGS: Record<Locale, Catalog> = {
   en: {
     appName: "Latch IDE",
     localeToggleLabel: "Switch interface language",
+    update: {
+      available: "A new version of Latch IDE is available: {latest} (installed: {current}).",
+      howTo: "Update by running:",
+      notes: "Release notes",
+      dismiss: "Dismiss update notification",
+    },
     connection: {
       label: "Daemon status",
       connected: "Connected",

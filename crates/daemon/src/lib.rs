@@ -9,6 +9,7 @@ pub mod pipeline_runner;
 pub mod session_manager;
 pub mod shim;
 pub mod uds_server;
+pub mod update_check;
 
 use std::net::SocketAddr;
 use std::sync::Arc;

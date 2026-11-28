@@ -140,6 +140,7 @@ struct HttpState {
     token: Arc<String>,
     limiter: Arc<AuthRateLimiter>,
     event_seq: Arc<AtomicU64>,
+    updates: crate::update_check::UpdateChecker,
 }
 
 /// Handle server HTTP/WS yang sedang berjalan.
@@ -165,16 +166,22 @@ pub async fn start_http_server(
         return Err(HttpError::NonLoopbackBind(bind_addr));
     }
 
+    let updates = crate::update_check::UpdateChecker::new(
+        manager.update_check_enabled(),
+        env!("CARGO_PKG_VERSION"),
+    );
     let state = HttpState {
         manager,
         token: Arc::new(token),
         limiter: Arc::new(AuthRateLimiter::default()),
         event_seq: Arc::new(AtomicU64::new(1)),
+        updates,
     };
 
     let app = Router::new()
         .route("/api/v1/health", get(handle_health))
         .route("/api/v1/metrics", get(handle_metrics))
+        .route("/api/v1/update", get(handle_update_info))
         .route("/api/v1/gc", post(handle_gc))
         .route("/api/v1/workspaces", get(handle_list_workspaces))
         .route("/api/v1/prefs", get(handle_get_prefs).put(handle_put_prefs))
@@ -1570,6 +1577,17 @@ async fn handle_list_workspaces(
         Ok(list) => Json(list).into_response(),
         Err(err) => manager_err_to_response(err),
     }
+}
+
+async fn handle_update_info(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = authorize_http(&state, &headers, peer, TokenScope::Read).await {
+        return resp;
+    }
+    Json(state.updates.info().await).into_response()
 }
 
 async fn handle_get_prefs(

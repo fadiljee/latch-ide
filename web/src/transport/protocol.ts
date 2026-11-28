@@ -48,6 +48,14 @@ export interface DaemonHealth {
   active_sessions: number;
 }
 
+export interface UpdateInfo {
+  current: string;
+  latest: string | null;
+  update_available: boolean;
+  release_url: string | null;
+  check_enabled: boolean;
+}
+
 export interface SessionTelemetrySummary {
   session_id: string;
   request_count: number;

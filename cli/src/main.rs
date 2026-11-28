@@ -96,6 +96,12 @@ enum Commands {
         #[arg(long)]
         print_token: bool,
     },
+    /// Periksa rilis terbaru dan perbarui Latch (CLI + Desktop App) bila ada versi baru.
+    Update {
+        /// Hanya periksa, jangan pasang.
+        #[arg(long)]
+        check: bool,
+    },
     /// Buka antarmuka Web Workbench di browser (auto-start daemon).
     #[command(alias = "open")]
     Web,
@@ -359,8 +365,97 @@ fn main() -> anyhow::Result<()> {
             print_token,
         } => run_open_workbench(&paths, path.as_deref(), !no_browser, print_token),
         Commands::Web => run_open_workbench(&paths, None, true, false),
+        Commands::Update { check } => run_update(check),
         other => run_async_client(paths, other),
     }
+}
+
+/// Ambil tag rilis terbaru dari GitHub lewat `curl` (CLI tidak membawa klien HTTP sendiri).
+fn fetch_latest_release_tag() -> anyhow::Result<String> {
+    let url = format!(
+        "https://api.github.com/repos/{}/releases/latest",
+        latch_daemon::update_check::RELEASES_REPO
+    );
+    let out = Command::new("curl")
+        .args([
+            "-fsSL",
+            "--max-time",
+            "10",
+            "-H",
+            "User-Agent: latch-cli",
+            &url,
+        ])
+        .output()
+        .context("gagal menjalankan curl (pasang curl atau unduh rilis secara manual)")?;
+    if !out.status.success() {
+        anyhow::bail!("gagal menghubungi GitHub Releases (cek koneksi internet)");
+    }
+    let body = String::from_utf8_lossy(&out.stdout);
+    latch_daemon::update_check::parse_tag_name(&body)
+        .ok_or_else(|| anyhow::anyhow!("respons rilis GitHub tidak dikenali"))
+}
+
+/// `latch update [--check]`: bandingkan versi, lalu jalankan installer resmi untuk tag yang sama.
+fn run_update(check_only: bool) -> anyhow::Result<()> {
+    let current = env!("CARGO_PKG_VERSION");
+    let tag = fetch_latest_release_tag()?;
+    if !latch_daemon::update_check::is_newer(&tag, current) {
+        println!("Latch sudah versi terbaru (v{current}).");
+        return Ok(());
+    }
+    println!("Versi baru tersedia: {tag} (terpasang: v{current}).");
+    println!(
+        "Catatan rilis: https://github.com/{}/releases/tag/{tag}",
+        latch_daemon::update_check::RELEASES_REPO
+    );
+    if check_only {
+        println!("Jalankan `latch update` untuk memperbarui.");
+        return Ok(());
+    }
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        anyhow::bail!(
+            "pembaruan otomatis saat ini hanya untuk Linux x86_64; unduh manual dari halaman rilis"
+        );
+    }
+
+    let exe = std::env::current_exe().context("gagal menentukan lokasi binary latch")?;
+    let install_dir = exe
+        .parent()
+        .context("lokasi binary latch tidak valid")?
+        .to_path_buf();
+    let script_url = format!(
+        "https://raw.githubusercontent.com/{}/{tag}/scripts/install.sh",
+        latch_daemon::update_check::RELEASES_REPO
+    );
+    println!("Memasang {tag} ke {} ...", install_dir.display());
+    let status = Command::new("sh")
+        .arg("-c")
+        .arg(format!("curl -fsSL '{script_url}' | sh"))
+        .env("LATCH_VERSION", &tag)
+        .env("LATCH_INSTALL_DIR", &install_dir)
+        .env("LATCH_NO_START", "1")
+        .status()
+        .context("gagal menjalankan installer")?;
+    if !status.success() {
+        anyhow::bail!(
+            "installer gagal (kode {:?}); versi lama tidak diubah",
+            status.code()
+        );
+    }
+
+    let new_bin = install_dir.join("latch");
+    let _ = Command::new(&new_bin).args(["daemon", "stop"]).status();
+    let restarted = Command::new(&new_bin)
+        .args(["daemon", "start"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if restarted {
+        println!("Selesai. Daemon dijalankan ulang dengan {tag}. Tutup dan buka lagi Latch IDE.");
+    } else {
+        println!("Selesai. Jalankan `latch daemon start`, lalu buka ulang Latch IDE.");
+    }
+    Ok(())
 }
 
 fn parse_duration_secs(raw: &str) -> anyhow::Result<u64> {
@@ -780,6 +875,7 @@ fn run_async_client(paths: RuntimePaths, cmd: Commands) -> anyhow::Result<()> {
             | Commands::Config { .. }
             | Commands::Remote { .. }
             | Commands::Ide { .. }
+            | Commands::Update { .. }
             | Commands::Web => {}
         }
         Ok(())

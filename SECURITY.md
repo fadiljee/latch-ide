@@ -59,6 +59,11 @@ Security fixes go to the latest release and the `main` branch. Please upgrade to
 - A workflow file from an untrusted repository is treated as untrusted code. Latch shows a summary and asks for confirmation before it runs.
 - Workflow shell steps run under the same sandbox and can never relax it.
 
+### Update checks
+- The daemon asks GitHub Releases for the latest version at most once every 6 hours. The request carries no token, project path or user data, and it only reads the version tag.
+- Latch never downloads or installs anything by itself. Updating is a manual `latch update`, which verifies the SHA-256 checksum of the download.
+- Turn the check off with `[updates] check = false` in `config.toml`.
+
 ### Budget and loop protection
 - Spending limits and loop detection stop a runaway agent in under one second.
 

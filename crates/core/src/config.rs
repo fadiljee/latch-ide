@@ -206,6 +206,22 @@ pub struct LatchConfig {
     pub retention: RetentionConfig,
     /// Pengaturan keamanan & perilaku Agent IDE (`[ide]`).
     pub ide: IdeConfig,
+    /// Pemeriksaan versi rilis terbaru (`[updates]`).
+    pub updates: UpdatesConfig,
+}
+
+/// Bagian `[updates]` pada `config.toml`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpdatesConfig {
+    /// Periksa rilis terbaru di GitHub dan tampilkan notifikasi (tanpa mengunduh/memasang).
+    pub check: bool,
+}
+
+impl Default for UpdatesConfig {
+    fn default() -> Self {
+        Self { check: true }
+    }
 }
 
 /// Bagian `[ide]` pada `config.toml` (`IDE_SECURITY.md` §3, `IT-207`, `IT-506`).
