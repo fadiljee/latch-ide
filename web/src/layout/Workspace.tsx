@@ -26,6 +26,9 @@ import {
 import type { Session, SessionDiff } from "../transport/protocol";
 
 const TerminalView = lazy(() => import("../features/terminal/TerminalView"));
+const TerminalGrid = lazy(() =>
+  import("../features/terminal/TerminalGrid").then((m) => ({ default: m.TerminalGrid })),
+);
 const DiffView = lazy(() => import("../features/review/DiffView"));
 
 interface SessionPaneProps {
@@ -170,9 +173,13 @@ export function Workspace() {
 
   const activeSessionId = useLayoutStore((s) => s.activeSessionId);
   const secondarySessionId = useLayoutStore((s) => s.secondarySessionId);
+  const focusedGridSessionId = useLayoutStore((s) => s.focusedGridSessionId);
   const splitMode = useLayoutStore((s) => s.splitMode);
   const primaryTab = useLayoutStore((s) => s.primaryTab);
   const secondaryTab = useLayoutStore((s) => s.secondaryTab);
+  const setActiveSession = useLayoutStore((s) => s.setActiveSession);
+  const setFocusedGridSession = useLayoutStore((s) => s.setFocusedGridSession);
+  const setSplitMode = useLayoutStore((s) => s.setSplitMode);
   const setPrimaryTab = useLayoutStore((s) => s.setPrimaryTab);
   const setSecondaryTab = useLayoutStore((s) => s.setSecondaryTab);
 
@@ -184,6 +191,24 @@ export function Workspace() {
   const effectivePrimary = primarySession ?? fallbackSession;
   const effectiveSecondary =
     (secondarySessionId ? byId[secondarySessionId] : undefined) ?? effectivePrimary;
+
+  const gridSessions: Session[] = [];
+  if (effectivePrimary) {
+    gridSessions.push(effectivePrimary);
+  }
+  for (const id of order) {
+    if (gridSessions.length >= 4) {
+      break;
+    }
+    const ses = byId[id];
+    if (ses && !gridSessions.some((item) => item.id === ses.id)) {
+      gridSessions.push(ses);
+    }
+  }
+  const effectiveGridFocusId =
+    focusedGridSessionId && gridSessions.some((item) => item.id === focusedGridSessionId)
+      ? focusedGridSessionId
+      : (gridSessions[0]?.id ?? "");
 
   if (activeRoute === "automations") {
     return (
@@ -292,6 +317,29 @@ export function Workspace() {
             {t.workspace.newSessionCta}
           </Button>
         </div>
+      ) : splitMode === "grid" ? (
+        <Suspense fallback={<p className="p-4 text-xs text-fg-3">{t.workspace.loadingDiff}</p>}>
+          <TerminalGrid
+            token={token}
+            sessions={gridSessions}
+            focusedSessionId={effectiveGridFocusId}
+            resyncLabel={t.workspace.resync}
+            inputPlaceholder={t.sessionActions.composerPlaceholder}
+            focusedLabel={t.workspace.focusedCell}
+            clickToFocusLabel={t.workspace.clickToFocus}
+            expandLabel={t.workspace.expandPane}
+            loadingLabel={t.workspace.loadingDiff}
+            onFocusSession={(sid) => {
+              setFocusedGridSession(sid);
+              setActiveSession(sid);
+            }}
+            onExpandSession={(sid) => {
+              setActiveSession(sid);
+              setFocusedGridSession(sid);
+              setSplitMode("single");
+            }}
+          />
+        </Suspense>
       ) : (
         <SplitLayout
           mode={splitMode}

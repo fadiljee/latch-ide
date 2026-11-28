@@ -8,6 +8,8 @@ import { useThemeStore } from "../../theme/theme-store";
 import { openPtyStream, type PtyStreamHandle } from "./pty-stream";
 import { readTerminalTheme } from "./terminal-theme";
 
+const MAX_PAUSED_BUFFER_BYTES = 64 * 1024;
+
 interface TerminalViewProps {
   token: string;
   sessionId: string;
@@ -15,6 +17,8 @@ interface TerminalViewProps {
   agentProfile: string;
   resyncLabel: string;
   inputPlaceholder: string;
+  focused?: boolean;
+  onFocus?: () => void;
 }
 
 export function TerminalView({
@@ -24,15 +28,30 @@ export function TerminalView({
   agentProfile,
   resyncLabel,
   inputPlaceholder,
+  focused = true,
+  onFocus,
 }: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const streamRef = useRef<PtyStreamHandle | null>(null);
   const termRef = useRef<Terminal | null>(null);
+  const focusedRef = useRef(focused);
+  const onFocusRef = useRef(onFocus);
+  const visibleRef = useRef(true);
+  const pausedChunksRef = useRef<Array<string | Uint8Array>>([]);
+  const pausedBytesRef = useRef(0);
   const [live, setLive] = useState(false);
   const [lineInput, setLineInput] = useState("");
   const style = useThemeStore((s) => s.style);
   const mode = useThemeStore((s) => s.resolvedMode);
   const accent = useThemeStore((s) => s.accent);
+
+  useEffect(() => {
+    focusedRef.current = focused;
+  }, [focused]);
+
+  useEffect(() => {
+    onFocusRef.current = onFocus;
+  }, [onFocus]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -59,10 +78,43 @@ export function TerminalView({
     }
     termRef.current = term;
 
+    const flushPaused = () => {
+      if (pausedChunksRef.current.length === 0) {
+        return;
+      }
+      if (pausedBytesRef.current >= MAX_PAUSED_BUFFER_BYTES) {
+        pausedChunksRef.current = [];
+        pausedBytesRef.current = 0;
+        streamRef.current?.requestResync();
+        return;
+      }
+      for (const chunk of pausedChunksRef.current) {
+        term.write(chunk);
+      }
+      pausedChunksRef.current = [];
+      pausedBytesRef.current = 0;
+    };
+
+    const updateVisibility = (isVisible: boolean) => {
+      const wasHidden = !visibleRef.current;
+      visibleRef.current = isVisible && document.visibilityState !== "hidden";
+      if (wasHidden && visibleRef.current) {
+        flushPaused();
+      }
+    };
+
     let stream: PtyStreamHandle | null = null;
     if (token) {
       stream = openPtyStream(token, sessionId, {
         onData: (chunk) => {
+          if (!visibleRef.current) {
+            if (pausedBytesRef.current < MAX_PAUSED_BUFFER_BYTES) {
+              pausedChunksRef.current.push(chunk);
+              pausedBytesRef.current +=
+                typeof chunk === "string" ? chunk.length : chunk.byteLength;
+            }
+            return;
+          }
           term.write(chunk);
         },
         onConnectionChange: (isLive) => {
@@ -75,11 +127,33 @@ export function TerminalView({
       streamRef.current = stream;
     }
 
+    // Input hanya diteruskan bila sel terminal ini sedang fokus (IT-110).
     const disposable = term.onData((data) => {
-      stream?.sendInput(data);
+      if (focusedRef.current) {
+        stream?.sendInput(data);
+      }
     });
 
+    const onVisibilityChange = () => {
+      updateVisibility(document.visibilityState !== "hidden");
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    let intersectionObserver: IntersectionObserver | null = null;
+    if (typeof IntersectionObserver !== "undefined") {
+      intersectionObserver = new IntersectionObserver((entries) => {
+        const entry = entries[0];
+        if (entry) {
+          updateVisibility(entry.isIntersecting);
+        }
+      });
+      intersectionObserver.observe(el);
+    }
+
     const observer = new ResizeObserver(() => {
+      if (!visibleRef.current) {
+        return;
+      }
       try {
         fitAddon.fit();
         stream?.sendResize(term.cols, term.rows);
@@ -89,12 +163,24 @@ export function TerminalView({
     });
     observer.observe(el);
 
+    const onContainerActivate = () => {
+      onFocusRef.current?.();
+    };
+    el.addEventListener("pointerdown", onContainerActivate);
+    el.addEventListener("focusin", onContainerActivate);
+
     return () => {
+      el.removeEventListener("pointerdown", onContainerActivate);
+      el.removeEventListener("focusin", onContainerActivate);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      intersectionObserver?.disconnect();
       observer.disconnect();
       disposable.dispose();
       stream?.close();
       streamRef.current = null;
       termRef.current = null;
+      pausedChunksRef.current = [];
+      pausedBytesRef.current = 0;
       term.dispose();
     };
   }, [token, sessionId]);
@@ -107,6 +193,9 @@ export function TerminalView({
 
   const handleSendLine = (ev: React.FormEvent) => {
     ev.preventDefault();
+    if (!focused) {
+      return;
+    }
     streamRef.current?.sendInput(lineInput ? `${lineInput}\r` : "\r");
     setLineInput("");
   };
@@ -126,7 +215,7 @@ export function TerminalView({
         </Button>
       </div>
 
-      <div ref={containerRef} className="min-h-[260px] flex-1 overflow-hidden p-2" />
+      <div ref={containerRef} className="min-h-[180px] flex-1 overflow-hidden p-2" />
 
       <form
         onSubmit={handleSendLine}
@@ -138,10 +227,11 @@ export function TerminalView({
         <input
           type="text"
           value={lineInput}
+          disabled={!focused}
           onChange={(e) => setLineInput(e.target.value)}
           placeholder={inputPlaceholder}
           aria-label={inputPlaceholder}
-          className="min-w-0 flex-1 bg-transparent font-mono text-xs text-fg placeholder:text-fg-3 focus:outline-none"
+          className="min-w-0 flex-1 bg-transparent font-mono text-xs text-fg placeholder:text-fg-3 focus:outline-none disabled:opacity-50"
         />
       </form>
     </div>

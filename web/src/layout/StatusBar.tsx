@@ -1,7 +1,8 @@
 import { StatusDot } from "../components/StatusDot";
+import { cn } from "../lib/cn";
 import { CATALOGS } from "../lib/i18n/catalog";
 import { useHostsStore } from "../state/hosts";
-import { useLayoutStore } from "../state/layout";
+import { useLayoutStore, type SplitMode } from "../state/layout";
 import { useSessionsStore } from "../state/sessions";
 import { useUiStore } from "../state/ui";
 import { useThemeStore } from "../theme/theme-store";
@@ -11,7 +12,7 @@ export function StatusBar() {
   const health = useHostsStore((s) => s.health);
   const activeSessionId = useLayoutStore((s) => s.activeSessionId);
   const splitMode = useLayoutStore((s) => s.splitMode);
-  const toggleSplit = useLayoutStore((s) => s.toggleSplit);
+  const setSplitMode = useLayoutStore((s) => s.setSplitMode);
   const activeSession = useSessionsStore((s) =>
     activeSessionId ? s.byId[activeSessionId] : undefined,
   );
@@ -39,13 +40,34 @@ export function StatusBar() {
       </div>
 
       <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={toggleSplit}
-          className="rounded-sm px-2 py-0.5 hover:bg-hover hover:text-fg"
+        <div
+          role="group"
+          aria-label="Workspace layout mode"
+          className="inline-flex items-center rounded-sm border border-line bg-app p-0.5"
         >
-          {splitMode === "single" ? t.workspace.splitToggle : t.workspace.singlePane}
-        </button>
+          {(
+            [
+              { id: "single", label: t.workspace.singlePane },
+              { id: "vertical", label: t.workspace.splitToggle },
+              { id: "grid", label: t.workspace.gridMode },
+            ] as readonly { id: SplitMode; label: string }[]
+          ).map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              aria-pressed={splitMode === item.id}
+              onClick={() => setSplitMode(item.id)}
+              className={cn(
+                "rounded-sm px-1.5 py-0.5 transition-colors",
+                splitMode === item.id
+                  ? "bg-accent-soft font-medium text-accent"
+                  : "text-fg-3 hover:bg-hover hover:text-fg",
+              )}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
         <button
           type="button"
           onClick={toggleSidePanel}
