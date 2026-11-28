@@ -6,9 +6,10 @@ use std::sync::Arc;
 
 use latch_core::id::now_ms;
 use latch_core::model::{
-    can_transition, ApprovalActionType, ApprovalDecision, ApprovalRequest, AuditEntry, PipelineRun,
-    PipelineStatus, Project, ProxyMode, Session, SessionSnapshot, SessionStatus,
-    SessionTelemetrySummary, TelemetryRecord, TripReason, UsageSource,
+    can_transition, format_scopes_csv, parse_scopes_csv, ApprovalActionType, ApprovalDecision,
+    ApprovalRequest, AuditEntry, PipelineRun, PipelineStatus, Project, ProxyMode, ScopedToken,
+    Session, SessionSnapshot, SessionStatus, SessionTelemetrySummary, TelemetryRecord, TripReason,
+    UsageSource,
 };
 use latch_core::redact::redact_secrets;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -16,6 +17,7 @@ use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 
 const MIGRATION_0001: &str = include_str!("../migrations/0001_initial.sql");
+const MIGRATION_0002: &str = include_str!("../migrations/0002_scoped_tokens.sql");
 const STORE_CHANNEL_CAPACITY: usize = 256;
 
 /// Kesalahan operasi basis data SQLite.
@@ -167,6 +169,28 @@ enum StoreCmd {
         audit_before_ms: i64,
         dry_run: bool,
         reply: Reply<(u64, u64)>,
+    },
+    InsertToken {
+        token: ScopedToken,
+        token_hash: String,
+        reply: Reply<ScopedToken>,
+    },
+    ListTokens {
+        reply: Reply<Vec<ScopedToken>>,
+    },
+    FindTokenByHash {
+        token_hash: String,
+        reply: Reply<Option<ScopedToken>>,
+    },
+    TouchTokenLastUsed {
+        id: String,
+        used_at: i64,
+        reply: Reply<()>,
+    },
+    RevokeToken {
+        id_or_prefix: String,
+        revoked_at: i64,
+        reply: Reply<ScopedToken>,
     },
     Shutdown {
         reply: Reply<()>,
@@ -516,6 +540,64 @@ impl StoreHandle {
         })
         .await
     }
+
+    /// Menyimpan metadata & hash SHA-256 bearer token ber-scope baru (`IT-102`).
+    pub async fn insert_token(
+        &self,
+        token: ScopedToken,
+        token_hash: String,
+    ) -> Result<ScopedToken, StoreError> {
+        self.request(|reply| StoreCmd::InsertToken {
+            token,
+            token_hash,
+            reply,
+        })
+        .await
+    }
+
+    /// Mengambil daftar seluruh metadata token ber-scope (tanpa hash/nilai mentah).
+    pub async fn list_tokens(&self) -> Result<Vec<ScopedToken>, StoreError> {
+        self.request(|reply| StoreCmd::ListTokens { reply }).await
+    }
+
+    /// Mencari token ber-scope berdasarkan hash SHA-256.
+    pub async fn find_token_by_hash(
+        &self,
+        token_hash: &str,
+    ) -> Result<Option<ScopedToken>, StoreError> {
+        let h = token_hash.to_string();
+        self.request(|reply| StoreCmd::FindTokenByHash {
+            token_hash: h,
+            reply,
+        })
+        .await
+    }
+
+    /// Memperbarui stempel waktu pemakaian terakhir token.
+    pub async fn touch_token_last_used(&self, id: &str, used_at: i64) -> Result<(), StoreError> {
+        let tid = id.to_string();
+        self.request(|reply| StoreCmd::TouchTokenLastUsed {
+            id: tid,
+            used_at,
+            reply,
+        })
+        .await
+    }
+
+    /// Mencabut token berdasarkan ID penuh atau prefiks ID.
+    pub async fn revoke_token(
+        &self,
+        id_or_prefix: &str,
+        revoked_at: i64,
+    ) -> Result<ScopedToken, StoreError> {
+        let key = id_or_prefix.to_string();
+        self.request(|reply| StoreCmd::RevokeToken {
+            id_or_prefix: key,
+            revoked_at,
+            reply,
+        })
+        .await
+    }
 }
 
 fn configure_and_migrate(conn: &Connection) -> Result<(), StoreError> {
@@ -543,6 +625,19 @@ fn configure_and_migrate(conn: &Connection) -> Result<(), StoreError> {
         conn.execute(
             "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
             params![1i64, "0001_initial", now_ms()],
+        )?;
+    }
+
+    let has_v2: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 2)",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_v2 {
+        conn.execute_batch(MIGRATION_0002)?;
+        conn.execute(
+            "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
+            params![2i64, "0002_scoped_tokens", now_ms()],
         )?;
     }
 
@@ -687,6 +782,29 @@ fn run_actor(mut conn: Connection, mut rx: mpsc::Receiver<StoreCmd>) {
                     audit_before_ms,
                     dry_run,
                 ));
+            }
+            StoreCmd::InsertToken {
+                token,
+                token_hash,
+                reply,
+            } => {
+                let _ = reply.send(exec_insert_token(&conn, token, &token_hash));
+            }
+            StoreCmd::ListTokens { reply } => {
+                let _ = reply.send(exec_list_tokens(&conn));
+            }
+            StoreCmd::FindTokenByHash { token_hash, reply } => {
+                let _ = reply.send(exec_find_token_by_hash(&conn, &token_hash));
+            }
+            StoreCmd::TouchTokenLastUsed { id, used_at, reply } => {
+                let _ = reply.send(exec_touch_token_last_used(&conn, &id, used_at));
+            }
+            StoreCmd::RevokeToken {
+                id_or_prefix,
+                revoked_at,
+                reply,
+            } => {
+                let _ = reply.send(exec_revoke_token(&conn, &id_or_prefix, revoked_at));
             }
             StoreCmd::Shutdown { reply } => {
                 let _ = reply.send(Ok(()));
@@ -1415,6 +1533,110 @@ fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<Session> {
         proxy_mode,
         sandbox_provider: row.get(15)?,
     })
+}
+
+fn row_to_scoped_token(row: &rusqlite::Row<'_>) -> rusqlite::Result<ScopedToken> {
+    let scopes_raw: String = row.get(2)?;
+    let scopes = parse_scopes_csv(&scopes_raw).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(e))
+    })?;
+    Ok(ScopedToken {
+        id: row.get(0)?,
+        label: row.get(1)?,
+        scopes,
+        created_at: row.get(3)?,
+        expires_at: row.get(4)?,
+        revoked_at: row.get(5)?,
+        last_used_at: row.get(6)?,
+    })
+}
+
+fn exec_insert_token(
+    conn: &Connection,
+    token: ScopedToken,
+    token_hash: &str,
+) -> Result<ScopedToken, StoreError> {
+    let safe_label = truncate_redacted(&token.label, 128);
+    let scopes_csv = format_scopes_csv(&token.scopes);
+    conn.execute(
+        "INSERT INTO api_tokens (id, label, token_hash, scopes, created_at, expires_at, revoked_at, last_used_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            token.id,
+            safe_label,
+            token_hash,
+            scopes_csv,
+            token.created_at,
+            token.expires_at,
+            token.revoked_at,
+            token.last_used_at,
+        ],
+    )?;
+    Ok(ScopedToken {
+        label: safe_label,
+        ..token
+    })
+}
+
+fn exec_list_tokens(conn: &Connection) -> Result<Vec<ScopedToken>, StoreError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, label, scopes, created_at, expires_at, revoked_at, last_used_at
+         FROM api_tokens ORDER BY created_at DESC",
+    )?;
+    let rows = stmt.query_map([], row_to_scoped_token)?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
+fn exec_find_token_by_hash(
+    conn: &Connection,
+    token_hash: &str,
+) -> Result<Option<ScopedToken>, StoreError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, label, scopes, created_at, expires_at, revoked_at, last_used_at
+         FROM api_tokens WHERE token_hash = ?1",
+    )?;
+    Ok(stmt
+        .query_row(params![token_hash], row_to_scoped_token)
+        .optional()?)
+}
+
+fn exec_touch_token_last_used(conn: &Connection, id: &str, used_at: i64) -> Result<(), StoreError> {
+    conn.execute(
+        "UPDATE api_tokens SET last_used_at = ?1 WHERE id = ?2",
+        params![used_at, id],
+    )?;
+    Ok(())
+}
+
+fn exec_revoke_token(
+    conn: &Connection,
+    id_or_prefix: &str,
+    revoked_at: i64,
+) -> Result<ScopedToken, StoreError> {
+    let prefix = format!("{id_or_prefix}%");
+    let found: Option<ScopedToken> = conn
+        .prepare(
+            "SELECT id, label, scopes, created_at, expires_at, revoked_at, last_used_at
+             FROM api_tokens WHERE id = ?1 OR id LIKE ?2 ORDER BY created_at DESC LIMIT 1",
+        )?
+        .query_row(params![id_or_prefix, prefix], row_to_scoped_token)
+        .optional()?;
+    let mut token = found.ok_or_else(|| StoreError::NotFound {
+        entity: "token",
+        key: id_or_prefix.to_string(),
+    })?;
+    if token.revoked_at.is_none() {
+        conn.execute(
+            "UPDATE api_tokens SET revoked_at = ?1 WHERE id = ?2",
+            params![revoked_at, token.id],
+        )?;
+        token.revoked_at = Some(revoked_at);
+    }
+    Ok(token)
 }
 
 fn truncate_redacted(raw: &str, max_bytes: usize) -> String {

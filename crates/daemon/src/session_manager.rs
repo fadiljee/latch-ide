@@ -18,9 +18,10 @@ use latch_core::integrations::{
     PluginConfig, PluginsConfig,
 };
 use latch_core::model::{
-    ApprovalActionType, ApprovalDecision, ApprovalRequest, AuditEntry, GcReport, MergeCheckResult,
-    MergeStrategy, PipelineRun, PipelineStatus, Project, ProxyMode, Session, SessionDiff,
-    SessionSnapshot, SessionStatus, SessionTelemetrySummary, TelemetryRecord, TripReason,
+    ApprovalActionType, ApprovalDecision, ApprovalRequest, AuditEntry, CreatedToken, GcReport,
+    MergeCheckResult, MergeStrategy, PipelineRun, PipelineStatus, Project, ProxyMode, ScopedToken,
+    Session, SessionDiff, SessionSnapshot, SessionStatus, SessionTelemetrySummary, TelemetryRecord,
+    TokenScope, TripReason,
 };
 use latch_core::pricing::{load_pricing_table, PricingTable};
 use latch_core::protocol::{
@@ -2335,6 +2336,137 @@ impl SessionManager {
         *guard = candidate;
         Ok(())
     }
+
+    // =========================================================================
+    // Manajemen Token Ber-Scope (`IT-102`, `IDE_SECURITY.md`)
+    // =========================================================================
+
+    /// Membuat bearer token acak 256-bit ber-scope; hanya hash SHA-256 yang disimpan di SQLite.
+    pub async fn create_scoped_token(
+        &self,
+        label: String,
+        scopes: Vec<TokenScope>,
+        expires_in_secs: Option<u64>,
+    ) -> Result<CreatedToken, ManagerError> {
+        if scopes.is_empty() {
+            return Err(ManagerError::Config(
+                "scoped token must include at least one scope".to_string(),
+            ));
+        }
+        let mut deduped = Vec::new();
+        for scope in scopes {
+            if !deduped.contains(&scope) {
+                deduped.push(scope);
+            }
+        }
+        let clean_label = if label.trim().is_empty() {
+            "custom".to_string()
+        } else {
+            label.trim().to_string()
+        };
+        let created_at = now_ms();
+        let expires_at = expires_in_secs
+            .and_then(|secs| i64::try_from(secs).ok())
+            .and_then(|secs| secs.checked_mul(1_000))
+            .and_then(|ms| created_at.checked_add(ms));
+
+        let raw_token = generate_random_bearer_token();
+        let token_hash = hash_token_sha256(&raw_token);
+        let meta = ScopedToken {
+            id: new_id(),
+            label: clean_label,
+            scopes: deduped,
+            created_at,
+            expires_at,
+            revoked_at: None,
+            last_used_at: None,
+        };
+        let saved = self.store.insert_token(meta, token_hash).await?;
+        let _ = self
+            .store
+            .insert_audit(AuditEntry {
+                id: None,
+                session_id: None,
+                kind: "token_created".to_string(),
+                detail: format!(
+                    "created scoped token {} (label='{}', scopes={:?})",
+                    short_id(&saved.id),
+                    saved.label,
+                    saved.scopes
+                ),
+                timestamp: now_ms(),
+            })
+            .await;
+
+        Ok(CreatedToken {
+            metadata: saved,
+            token: raw_token,
+        })
+    }
+
+    /// Mengembalikan daftar metadata seluruh token ber-scope (tanpa hash/nilai mentah).
+    pub async fn list_scoped_tokens(&self) -> Result<Vec<ScopedToken>, ManagerError> {
+        Ok(self.store.list_tokens().await?)
+    }
+
+    /// Mencabut token ber-scope berdasarkan ID atau prefiks ID.
+    pub async fn revoke_scoped_token(
+        &self,
+        id_or_prefix: &str,
+    ) -> Result<ScopedToken, ManagerError> {
+        let revoked = self.store.revoke_token(id_or_prefix, now_ms()).await?;
+        let _ = self
+            .store
+            .insert_audit(AuditEntry {
+                id: None,
+                session_id: None,
+                kind: "token_revoked".to_string(),
+                detail: format!("revoked scoped token {}", short_id(&revoked.id)),
+                timestamp: now_ms(),
+            })
+            .await;
+        Ok(revoked)
+    }
+
+    /// Memverifikasi bearer token ber-scope terhadap hash SHA-256 tersimpan dan memeriksa kedaluwarsa/pencabutan.
+    pub async fn authenticate_scoped_token(
+        &self,
+        raw_token: &str,
+    ) -> Result<Option<ScopedToken>, ManagerError> {
+        if raw_token.len() < 32 {
+            return Ok(None);
+        }
+        let hash = hash_token_sha256(raw_token);
+        let Some(token) = self.store.find_token_by_hash(&hash).await? else {
+            return Ok(None);
+        };
+        let now = now_ms();
+        if !token.is_active_at(now) {
+            return Ok(None);
+        }
+        let _ = self.store.touch_token_last_used(&token.id, now).await;
+        Ok(Some(token))
+    }
+}
+
+fn generate_random_bearer_token() -> String {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine as _;
+    use rand::RngCore;
+    let mut raw = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut raw);
+    URL_SAFE_NO_PAD.encode(raw)
+}
+
+fn hash_token_sha256(raw: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(raw.as_bytes());
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for b in digest {
+        use std::fmt::Write;
+        let _ = write!(&mut hex, "{b:02x}");
+    }
+    hex
 }
 
 fn dir_size_bytes(path: &Path) -> u64 {

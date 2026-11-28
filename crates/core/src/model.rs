@@ -627,6 +627,148 @@ pub struct GcReport {
     pub bytes_freed: u64,
 }
 
+/// Scope izin bearer token Agent IDE / REST API (`IT-102`, `IDE_SECURITY.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TokenScope {
+    /// Baca status, diff, berkas, pencarian, event, dan layar terminal.
+    Read,
+    /// Kontrol sesi (run, pause, resume, kill, approve/deny, kirim pesan, merge/discard).
+    Control,
+    /// Tulis/ubah/hapus berkas worktree, aksi hunk, dan operasi git lokal.
+    Write,
+    /// Membuka terminal shell tersandbox pada worktree.
+    ShellSandbox,
+    /// Membuka terminal shell host tanpa sandbox (nonaktif bawaan).
+    ShellHost,
+    /// Administrasi penuh (manajemen proyek, integrasi, GC, pembuatan/pencabutan token).
+    Admin,
+}
+
+impl TokenScope {
+    /// Seluruh scope bawaan untuk token pemilik lokal (`latch token show`, tanpa `shell-host`).
+    pub fn owner_default_scopes() -> Vec<Self> {
+        vec![
+            Self::Read,
+            Self::Control,
+            Self::Write,
+            Self::ShellSandbox,
+            Self::Admin,
+        ]
+    }
+
+    /// Representasi string kebab-case untuk SQLite dan CLI.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Control => "control",
+            Self::Write => "write",
+            Self::ShellSandbox => "shell-sandbox",
+            Self::ShellHost => "shell-host",
+            Self::Admin => "admin",
+        }
+    }
+}
+
+impl fmt::Display for TokenScope {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for TokenScope {
+    type Err = ParseEnumError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim() {
+            "read" => Ok(Self::Read),
+            "control" => Ok(Self::Control),
+            "write" => Ok(Self::Write),
+            "shell-sandbox" | "shell_sandbox" => Ok(Self::ShellSandbox),
+            "shell-host" | "shell_host" => Ok(Self::ShellHost),
+            "admin" => Ok(Self::Admin),
+            _ => Err(ParseEnumError {
+                kind: "token_scope",
+                value: s.to_string(),
+            }),
+        }
+    }
+}
+
+/// Mem-parse daftar scope dipisahkan koma (`"read,control"`), menghapus duplikat secara deterministik.
+pub fn parse_scopes_csv(raw: &str) -> Result<Vec<TokenScope>, ParseEnumError> {
+    let mut out = Vec::new();
+    for part in raw.split(',') {
+        let trimmed = part.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let scope = trimmed.parse::<TokenScope>()?;
+        if !out.contains(&scope) {
+            out.push(scope);
+        }
+    }
+    if out.is_empty() {
+        return Err(ParseEnumError {
+            kind: "token_scope",
+            value: raw.to_string(),
+        });
+    }
+    Ok(out)
+}
+
+/// Memformat daftar scope menjadi CSV deterministik untuk persistensi SQLite.
+pub fn format_scopes_csv(scopes: &[TokenScope]) -> String {
+    scopes
+        .iter()
+        .map(|s| s.as_str())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Metadata bearer token ber-scope (tidak pernah memuat nilai token mentah atau hash).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScopedToken {
+    /// ID unik UUID v7 token.
+    pub id: String,
+    /// Label ramah pengguna (mis. `hp-iphone`, `readonly-monitor`).
+    pub label: String,
+    /// Daftar scope yang diberikan ke token ini.
+    pub scopes: Vec<TokenScope>,
+    /// Waktu pembuatan (UTC epoch ms).
+    pub created_at: i64,
+    /// Waktu kedaluwarsa opsional (UTC epoch ms).
+    pub expires_at: Option<i64>,
+    /// Waktu pencabutan jika sudah di-revoke (UTC epoch ms).
+    pub revoked_at: Option<i64>,
+    /// Waktu pemakaian terakhir (UTC epoch ms).
+    pub last_used_at: Option<i64>,
+}
+
+impl ScopedToken {
+    /// Menentukan apakah token masih aktif (belum dicabut dan belum kedaluwarsa).
+    pub fn is_active_at(&self, now_epoch_ms: i64) -> bool {
+        if self.revoked_at.is_some() {
+            return false;
+        }
+        if let Some(exp) = self.expires_at {
+            if now_epoch_ms >= exp {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// Respons pembuatan token baru (token mentah hanya dikembalikan satu kali).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreatedToken {
+    /// Metadata token tersimpan.
+    pub metadata: ScopedToken,
+    /// Nilai bearer token mentah (hanya ditampilkan sekali saat pembuatan).
+    pub token: String,
+}
+
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;

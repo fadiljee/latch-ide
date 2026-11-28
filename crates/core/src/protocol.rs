@@ -51,7 +51,8 @@ async fn connect_ipc(socket_path: &Path) -> Result<IpcStream, std::io::Error> {
 }
 
 use crate::model::{
-    GcReport, MergeCheckResult, MergeStrategy, PipelineRun, Project, Session, SessionDiff,
+    CreatedToken, GcReport, MergeCheckResult, MergeStrategy, PipelineRun, Project, ScopedToken,
+    Session, SessionDiff, TokenScope,
 };
 
 /// Ukuran bingkai maksimal protokol UDS (16 MiB).
@@ -293,6 +294,25 @@ pub struct GcParams {
     /// Bila `true`, hanya menghitung kandidat tanpa menghapus data.
     #[serde(default)]
     pub dry_run: bool,
+}
+
+/// Parameter pembuatan bearer token ber-scope (`token.create`, `IT-102`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TokenCreateParams {
+    /// Label ramah pengguna (mis. `hp`, `readonly-ci`).
+    pub label: String,
+    /// Daftar scope izin yang diberikan ke token ini.
+    pub scopes: Vec<TokenScope>,
+    /// Masa berlaku opsional dalam detik sejak pembuatan.
+    #[serde(default)]
+    pub expires_in_secs: Option<u64>,
+}
+
+/// Parameter pencabutan bearer token ber-scope (`token.revoke`, `IT-102`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TokenRevokeParams {
+    /// ID penuh atau prefiks ID token.
+    pub id: String,
 }
 
 /// Snapshot layar virtual `vt100` dari sesi.
@@ -732,6 +752,25 @@ impl UdsClient {
     /// Menjalankan pembersihan retensi & sampah disk (`latch gc`, `T-411`).
     pub async fn gc(&self, dry_run: bool) -> Result<GcReport, ProtocolError> {
         self.call("daemon.gc", &GcParams { dry_run }).await
+    }
+
+    /// Membuat bearer token ber-scope baru (`token.create`, `IT-102`).
+    pub async fn token_create(
+        &self,
+        params: &TokenCreateParams,
+    ) -> Result<CreatedToken, ProtocolError> {
+        self.call("token.create", params).await
+    }
+
+    /// Mengambil daftar metadata token ber-scope (`token.list`, `IT-102`).
+    pub async fn token_list(&self) -> Result<Vec<ScopedToken>, ProtocolError> {
+        self.call("token.list", &serde_json::json!({})).await
+    }
+
+    /// Mencabut bearer token ber-scope berdasarkan ID atau prefiks (`token.revoke`, `IT-102`).
+    pub async fn token_revoke(&self, id: &str) -> Result<ScopedToken, ProtocolError> {
+        self.call("token.revoke", &TokenRevokeParams { id: id.to_string() })
+            .await
     }
 }
 
