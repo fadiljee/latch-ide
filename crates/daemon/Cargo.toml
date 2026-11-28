@@ -36,7 +36,6 @@ latch-sandbox = { workspace = true }
 latch-search = { workspace = true, optional = true }
 latch-store = { workspace = true }
 latch-workbench-api = { workspace = true, optional = true }
-nix = { workspace = true }
 rand = { workspace = true }
 reqwest = { workspace = true }
 rust-embed = { workspace = true }
@@ -49,6 +48,9 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-appender = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -89,3 +89,31 @@ jobs:
       - name: Check production npm advisories
         working-directory: web
         run: npm audit --omit=dev --audit-level=high
+
+  os-compat:
+    name: OS compatibility (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check workspace compilation on ${{ matrix.os }}
+        run: cargo check --workspace --all-targets
+      - name: Run non-sandbox cross-platform unit tests
+        run: >-
+          cargo test
+          -p latch-core
+          -p latch-store
+          -p latch-git-engine
+          -p latch-proxy
+          -p latch-dag
+          -p latch-sandbox
+          -p latch-fs-service
+          -p latch-search
+          -p latch-agent-proto
+          -p latch-workbench-api
+          -p latch-tui

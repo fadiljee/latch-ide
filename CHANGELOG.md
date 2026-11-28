@@ -5,6 +5,8 @@ Format mengikuti [Keep a Changelog](https://keepachangelog.com/id-ID/1.1.0/) dan
 ## [Unreleased]
 
 ### Added
+- **Kompatibilitas OS macOS & Windows di CI (`T-901`, `NFR-07`):**
+  - Memindahkan dependensi `nix` di `latch-pty-pool` dan `latch-daemon` ke `[target.'cfg(unix)'.dependencies]`, menyediakan abstraksi `IpcStream` lintas OS (`UnixStream` di Unix, loopback `TcpStream` di Windows) di `latch-core`/`latch-daemon`/`latch-tui`, serta menambahkan matrix job CI `os-compat` (`macos-latest` & `windows-latest`).
 - **Keamanan Rantai Pasok CI (`T-900`, `SECURITY §11`):**
   - Menambahkan `.github/dependabot.yml` (pembaruan mingguan untuk Cargo workspace, `desktop/src-tauri`, `web` npm, dan GitHub Actions) serta job CI `security-audit` (`cargo deny check`, `cargo audit`, `npm audit --omit=dev --audit-level=high`) dengan jadwal mingguan.
   - Menambal `RUSTSEC-2026-0459` (CVE-2026-119375) lewat upgrade `rusqlite` `0.32 -> 0.41` (`libsqlite3-sys 0.39.1`, MSRV 1.89), menghapus dependensi `chrono` yang sudah tidak dirawat (`RUSTSEC-2026-0543`) dengan pemformat UTC RFC 3339 tanpa dependensi tambahan, dan mengaktifkan `allow-wildcard-paths = true` di `deny.toml`.

@@ -1,5 +1,6 @@
-//! Server Unix Domain Socket (`0600` + `SO_PEERCRED`) melayani JSON-RPC 2.0 & attach PTY (T-130).
+//! Server IPC lokal (`0600` + `SO_PEERCRED` di Unix; loopback TCP di Windows) melayani JSON-RPC 2.0 & attach PTY (T-130, NFR-07).
 
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::Arc;
@@ -7,13 +8,15 @@ use std::sync::Arc;
 use base64::Engine;
 use latch_core::protocol::{
     read_json_frame, read_raw_frame, write_json_frame, write_raw_frame, AttachFrame, GcParams,
-    JsonRpcRequest, JsonRpcResponse, PipelineArenaSelectParams, PipelineIdParams,
+    IpcStream, JsonRpcRequest, JsonRpcResponse, PipelineArenaSelectParams, PipelineIdParams,
     PipelineListParams, PipelineRunParams, ProjectAddParams, SessionDiffParams, SessionIdParams,
     SessionListParams, SessionMergeParams, SessionResizeParams, SessionRunParams,
 };
 use latch_pty_pool::PtyFrame;
+#[cfg(unix)]
 use nix::unistd::geteuid;
 use serde::Deserialize;
+#[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Notify;
 use tracing::{debug, warn};
@@ -31,7 +34,8 @@ struct IdOrNameParams {
     id_or_name: String,
 }
 
-/// Menjalankan listener UDS sampai sinyal shutdown diterima.
+/// Menjalankan listener IPC lokal (UDS di Unix, loopback TCP di Windows) sampai sinyal shutdown diterima.
+#[cfg(unix)]
 pub async fn serve_uds(
     socket_path: &Path,
     manager: SessionManager,
@@ -80,7 +84,49 @@ pub async fn serve_uds(
     Ok(())
 }
 
-async fn handle_connection(mut stream: UnixStream, mgr: SessionManager) -> anyhow::Result<()> {
+/// Menjalankan listener IPC loopback TCP lokal pada OS non-Unix (Windows).
+#[cfg(not(unix))]
+pub async fn serve_uds(
+    socket_path: &Path,
+    manager: SessionManager,
+    shutdown: Arc<Notify>,
+) -> anyhow::Result<()> {
+    if let Some(parent) = socket_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    std::fs::write(socket_path, addr.to_string())?;
+
+    loop {
+        tokio::select! {
+            _ = shutdown.notified() => break,
+            accept_res = listener.accept() => {
+                match accept_res {
+                    Ok((stream, peer)) => {
+                        if !peer.ip().is_loopback() {
+                            continue;
+                        }
+                        let mgr = manager.clone();
+                        tokio::spawn(async move {
+                            if let Err(err) = handle_connection(stream, mgr).await {
+                                debug!(error = %err, "loopback IPC connection closed with error");
+                            }
+                        });
+                    }
+                    Err(err) => {
+                        warn!(error = %err, "failed accepting loopback IPC client");
+                    }
+                }
+            }
+        }
+    }
+
+    let _ = std::fs::remove_file(socket_path);
+    Ok(())
+}
+
+async fn handle_connection(mut stream: IpcStream, mgr: SessionManager) -> anyhow::Result<()> {
     verify_peer_uid(&stream)?;
 
     while let Some(req) = read_json_frame::<_, JsonRpcRequest>(&mut stream).await? {
@@ -161,7 +207,8 @@ async fn handle_connection(mut stream: UnixStream, mgr: SessionManager) -> anyho
     Ok(())
 }
 
-fn verify_peer_uid(stream: &UnixStream) -> anyhow::Result<()> {
+#[cfg(unix)]
+fn verify_peer_uid(stream: &IpcStream) -> anyhow::Result<()> {
     let cred = stream.peer_cred()?;
     let my_uid = geteuid().as_raw();
     if cred.uid() != my_uid {
@@ -170,6 +217,15 @@ fn verify_peer_uid(stream: &UnixStream) -> anyhow::Result<()> {
             cred.uid(),
             my_uid
         );
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn verify_peer_uid(stream: &IpcStream) -> anyhow::Result<()> {
+    let peer = stream.peer_addr()?;
+    if !peer.ip().is_loopback() {
+        anyhow::bail!("unauthorized non-loopback IPC peer {}", peer.ip());
     }
     Ok(())
 }

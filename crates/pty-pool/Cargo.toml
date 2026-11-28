@@ -10,12 +10,14 @@ workspace = true
 
 [dependencies]
 latch-core = { workspace = true }
-nix = { workspace = true }
 portable-pty = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 vt100 = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
