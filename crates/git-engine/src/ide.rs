@@ -750,6 +750,8 @@ mod tests {
         run_cmd(&repo, &["init", "-b", "main"]);
         run_cmd(&repo, &["config", "user.name", "Latch"]);
         run_cmd(&repo, &["config", "user.email", "latch@localhost"]);
+        // Windows runner default autocrlf=true mengubah LF jadi CRLF; matikan agar assert deterministik.
+        run_cmd(&repo, &["config", "core.autocrlf", "false"]);
         std::fs::write(repo.join("auth.rs"), "fn a() {}\nfn b() {}\n").unwrap();
         run_cmd(&repo, &["add", "."]);
         run_cmd(&repo, &["commit", "-m", "init"]);

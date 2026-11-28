@@ -934,9 +934,8 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        apply_op, list_tree, read_file, read_raw, resolve_beneath_root, stat_path,
-        validate_relative_subpath, write_file, FsOpKind, FsOpRequest, FsServiceError,
-        FsWriteRequest,
+        apply_op, list_tree, read_file, resolve_beneath_root, stat_path, validate_relative_subpath,
+        write_file, FsOpKind, FsOpRequest, FsServiceError, FsWriteRequest,
     };
 
     #[test]
@@ -1057,6 +1056,8 @@ mod tests {
     #[test]
     fn blocks_symlink_escape_for_read_write_raw_and_tree() {
         use std::os::unix::fs::symlink;
+
+        use super::read_raw;
 
         let dir = TempDir::new().unwrap();
         let outside = dir.path().join("outside_secret.txt");
