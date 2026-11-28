@@ -1,0 +1,52 @@
+# Contoh konfigurasi tarif model LLM untuk ~/.config/latch/pricing.toml (T-903, R-10).
+# Salin berkas ini ke ~/.config/latch/pricing.toml lalu sesuaikan tarif sesuai kontrak/provider Anda.
+# Nilai yang ditulis di sini akan menggabungkan dan menimpa tabel bawaan Latch berdasarkan kecocokan
+# nama persis atau prefiks terpanjang (dipisahkan '-', ':', atau '.').
+
+[models."gpt-5"]
+input_per_1m_usd = 1.25
+output_per_1m_usd = 10.00
+
+[models."gpt-5-mini"]
+input_per_1m_usd = 0.25
+output_per_1m_usd = 2.00
+
+[models."gpt-4.1"]
+input_per_1m_usd = 2.00
+output_per_1m_usd = 8.00
+
+[models."o4-mini"]
+input_per_1m_usd = 1.10
+output_per_1m_usd = 4.40
+
+[models."claude-opus-4-1"]
+input_per_1m_usd = 15.00
+output_per_1m_usd = 75.00
+
+[models."claude-sonnet-4-5"]
+input_per_1m_usd = 3.00
+output_per_1m_usd = 15.00
+
+[models."claude-3-5-haiku"]
+input_per_1m_usd = 0.80
+output_per_1m_usd = 4.00
+
+[models."gemini-2.5-pro"]
+input_per_1m_usd = 1.25
+output_per_1m_usd = 10.00
+
+[models."gemini-2.5-flash"]
+input_per_1m_usd = 0.15
+output_per_1m_usd = 0.60
+
+[models."deepseek-reasoner"]
+input_per_1m_usd = 0.55
+output_per_1m_usd = 2.19
+
+[models."kimi-k2"]
+input_per_1m_usd = 0.60
+output_per_1m_usd = 2.50
+
+[models."qwen3-coder"]
+input_per_1m_usd = 0.30
+output_per_1m_usd = 1.20

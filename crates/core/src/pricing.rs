@@ -37,20 +37,36 @@ pub struct PricingTable {
 impl Default for PricingTable {
     fn default() -> Self {
         let mut models = BTreeMap::new();
-        // Tarif acuan umum (dapat ditimpa lewat ~/.config/latch/pricing.toml)
-        let builtins: [(&str, f64, f64); 12] = [
-            ("gpt-4o", 2.50, 10.00),
-            ("gpt-4o-mini", 0.15, 0.60),
+        // Tarif acuan berkala (USD per 1M token; dapat ditimpa lewat ~/.config/latch/pricing.toml)
+        let builtins: [(&str, f64, f64); 24] = [
+            // OpenAI
+            ("gpt-5", 1.25, 10.00),
+            ("gpt-5-mini", 0.25, 2.00),
             ("gpt-4.1", 2.00, 8.00),
             ("gpt-4.1-mini", 0.40, 1.60),
+            ("gpt-4.1-nano", 0.10, 0.40),
+            ("gpt-4o", 2.50, 10.00),
+            ("gpt-4o-mini", 0.15, 0.60),
+            ("o3", 2.00, 8.00),
             ("o3-mini", 1.10, 4.40),
-            ("claude-3-5-sonnet", 3.00, 15.00),
-            ("claude-3-7-sonnet", 3.00, 15.00),
-            ("claude-sonnet-4", 3.00, 15.00),
+            ("o4-mini", 1.10, 4.40),
+            // Anthropic
+            ("claude-opus-4-1", 15.00, 75.00),
             ("claude-opus-4", 15.00, 75.00),
+            ("claude-sonnet-4-5", 3.00, 15.00),
+            ("claude-sonnet-4", 3.00, 15.00),
+            ("claude-3-7-sonnet", 3.00, 15.00),
+            ("claude-3-5-sonnet", 3.00, 15.00),
             ("claude-3-5-haiku", 0.80, 4.00),
+            // Google Gemini
             ("gemini-2.5-pro", 1.25, 10.00),
             ("gemini-2.5-flash", 0.15, 0.60),
+            ("gemini-2.5-flash-lite", 0.10, 0.40),
+            // DeepSeek, Moonshot, Qwen
+            ("deepseek-chat", 0.27, 1.10),
+            ("deepseek-reasoner", 0.55, 2.19),
+            ("kimi-k2", 0.60, 2.50),
+            ("qwen3-coder", 0.30, 1.20),
         ];
         for (name, input_per_1m_usd, output_per_1m_usd) in builtins {
             models.insert(
@@ -147,14 +163,14 @@ pub fn parse_pricing_table_str(src: &str, path_label: &str) -> Result<PricingTab
     for (name, pricing) in custom.models {
         if pricing.input_per_1m_usd < 0.0
             || pricing.output_per_1m_usd < 0.0
-            || pricing.input_per_1m_usd.is_nan()
-            || pricing.output_per_1m_usd.is_nan()
+            || !pricing.input_per_1m_usd.is_finite()
+            || !pricing.output_per_1m_usd.is_finite()
         {
             return Err(ConfigError::Validation {
                 path: path_label.to_string(),
                 line: 1,
                 field: format!("models.{name}"),
-                message: "pricing values must be non-negative numbers".to_string(),
+                message: "pricing values must be finite non-negative numbers".to_string(),
             });
         }
         merged.models.insert(name, pricing);
@@ -193,5 +209,21 @@ output_per_1m_usd = 1.5
         let est = table.estimate_cost(Some("custom-local-llm"), 1_000_000, 500_000);
         assert!(est.known_model);
         assert!((est.cost_usd - 1.25).abs() < 1e-6);
+
+        // Contoh file examples/pricing.toml harus selalu valid
+        let example_src = include_str!("../../../examples/pricing.toml");
+        let parsed_example = parse_pricing_table_str(example_src, "examples/pricing.toml").unwrap();
+        assert!(parsed_example.lookup("gpt-5").is_some());
+        assert!(parsed_example
+            .lookup("claude-sonnet-4-5-20250929")
+            .is_some());
+        assert!(parsed_example.lookup("gemini-2.5-pro-preview").is_some());
+
+        // Nilai negatif atau tak hingga wajib ditolak
+        assert!(parse_pricing_table_str(
+            "[models.bad]\ninput_per_1m_usd = -1.0\noutput_per_1m_usd = 1.0\n",
+            "bad.toml"
+        )
+        .is_err());
     }
 }
