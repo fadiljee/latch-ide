@@ -4,6 +4,8 @@ Format mengikuti [Keep a Changelog](https://keepachangelog.com/id-ID/1.1.0/) dan
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-11-28
+
 ### Added
 - **Notifikasi & Perintah Pembaruan:** `latch update [--check]` memeriksa rilis terbaru, memasang CLI + Desktop App lewat installer resmi untuk tag yang sama, lalu menjalankan ulang daemon. Daemon mengekspos `GET /api/v1/update` (scope `read`, cache RAM 6 jam, timeout 5 detik) dan UI menampilkan banner "versi baru tersedia" yang dapat ditutup per versi. Pemeriksaan hanya membaca GitHub Releases tanpa mengirim data pengguna dan dapat dimatikan dengan `[updates] check = false`.
 
